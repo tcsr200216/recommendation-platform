@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.recommender import Interaction, InteractionType, PopularityRecommender
+from app.repository import InMemoryInteractionRepository, InteractionRepository
 
 
 class InteractionRequest(BaseModel):
@@ -30,9 +31,7 @@ app = FastAPI(
     description="Production-oriented recommendation and ranking API.",
 )
 
-# MVP persistence boundary. PostgreSQL-backed repositories will replace this
-# in-memory collection without changing the API contract.
-_interactions: list[Interaction] = []
+interaction_repository: InteractionRepository = InMemoryInteractionRepository()
 
 
 @app.get("/health", tags=["system"])
@@ -62,7 +61,7 @@ async def record_interaction(payload: InteractionRequest) -> InteractionResponse
         item_id=payload.item_id,
         interaction_type=payload.interaction_type,
     )
-    _interactions.append(interaction)
+    interaction_repository.add(interaction)
 
     return InteractionResponse(
         user_id=interaction.user_id,
@@ -82,13 +81,15 @@ async def get_recommendations(
     limit: int = Query(default=10, ge=1, le=100),
 ) -> list[RecommendationResponse]:
     """Return weighted-popularity recommendations excluding items the user already saw."""
-    if not _interactions:
+    interactions = interaction_repository.list_all()
+
+    if not interactions:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No interactions are available yet.",
         )
 
-    recommender = PopularityRecommender(_interactions)
+    recommender = PopularityRecommender(interactions)
     recommendations = recommender.recommend(user_id=user_id, limit=limit)
 
     return [
