@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.recommender import Interaction, InteractionType, PopularityRecommender
+from app.recommender import (
+    Interaction,
+    InteractionType,
+    PersonalizedRecommender,
+    PopularityRecommender,
+)
 from app.repository import InteractionRepository, build_interaction_repository
 
 
@@ -97,8 +104,13 @@ async def record_interaction(payload: InteractionRequest) -> InteractionResponse
 async def get_recommendations(
     user_id: str,
     limit: int = Query(default=10, ge=1, le=100),
+    strategy: Literal["personalized", "popular"] = Query(default="personalized"),
 ) -> list[RecommendationResponse]:
-    """Return weighted-popularity recommendations excluding items the user already saw."""
+    """Return personalized or weighted-popularity recommendations.
+
+    Personalized ranking falls back to popularity when neighbor overlap
+    cannot produce candidates; both strategies exclude already-seen items.
+    """
     interactions = interaction_repository.list_all()
 
     if not interactions:
@@ -107,7 +119,11 @@ async def get_recommendations(
             detail="No interactions are available yet.",
         )
 
-    recommender = PopularityRecommender(interactions)
+    recommender = (
+        PersonalizedRecommender(interactions)
+        if strategy == "personalized"
+        else PopularityRecommender(interactions)
+    )
     recommendations = recommender.recommend(user_id=user_id, limit=limit)
 
     return [
