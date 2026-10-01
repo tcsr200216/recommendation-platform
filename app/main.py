@@ -4,7 +4,9 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from redis.exceptions import RedisError
 
+from app.cache import RecommendationCache, build_recommendation_cache
 from app.config import settings
 from app.recommender import (
     Interaction,
@@ -42,6 +44,11 @@ app = FastAPI(
 interaction_repository: InteractionRepository = build_interaction_repository(
     settings.database_url
 )
+recommendation_cache: RecommendationCache = build_recommendation_cache(
+    settings.redis_url,
+    ttl_seconds=settings.cache_ttl_seconds,
+    namespace=settings.cache_namespace,
+)
 
 
 @app.get("/health", tags=["system"])
@@ -52,16 +59,22 @@ async def health() -> dict[str, str]:
 
 @app.get("/ready", tags=["system"])
 async def ready() -> dict[str, str]:
-    """Return readiness only when the active persistence backend is reachable."""
+    """Check the selected persistence and cache dependencies."""
     if not interaction_repository.is_ready():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Interaction repository is unavailable.",
         )
+    if not recommendation_cache.is_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Recommendation cache is unavailable.",
+        )
 
     return {
         "status": "ready",
         "storage": interaction_repository.backend,
+        "cache": recommendation_cache.backend,
     }
 
 
@@ -80,13 +93,21 @@ async def root() -> dict[str, str]:
     tags=["interactions"],
 )
 async def record_interaction(payload: InteractionRequest) -> InteractionResponse:
-    """Record a user-item interaction for recommendation generation."""
+    """Record a user-item interaction and invalidate any cached rankings."""
     interaction = Interaction(
         user_id=payload.user_id,
         item_id=payload.item_id,
         interaction_type=payload.interaction_type,
     )
     interaction_repository.add(interaction)
+    try:
+        recommendation_cache.invalidate()
+    except RedisError as exc:
+        # Recording succeeded; do not imply that a retry would be harmless.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interaction recorded, but recommendation cache invalidation failed.",
+        ) from exc
 
     return InteractionResponse(
         user_id=interaction.user_id,
@@ -106,13 +127,19 @@ async def get_recommendations(
     limit: int = Query(default=10, ge=1, le=100),
     strategy: Literal["personalized", "popular"] = Query(default="personalized"),
 ) -> list[RecommendationResponse]:
-    """Return personalized or weighted-popularity recommendations.
+    """Use versioned cache-aside ranking, with a live fallback on cache read failure."""
+    try:
+        cached = recommendation_cache.get(user_id, strategy, limit)
+    except RedisError:
+        cached = None
 
-    Personalized ranking falls back to popularity when neighbor overlap
-    cannot produce candidates; both strategies exclude already-seen items.
-    """
+    if cached is not None:
+        return [
+            RecommendationResponse(item_id=item.item_id, score=item.score)
+            for item in cached
+        ]
+
     interactions = interaction_repository.list_all()
-
     if not interactions:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -125,6 +152,12 @@ async def get_recommendations(
         else PopularityRecommender(interactions)
     )
     recommendations = recommender.recommend(user_id=user_id, limit=limit)
+
+    try:
+        recommendation_cache.set(user_id, strategy, limit, recommendations)
+    except RedisError:
+        # Cache is an optimization; ranking is still possible from source data.
+        pass
 
     return [
         RecommendationResponse(item_id=item.item_id, score=item.score)
