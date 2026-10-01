@@ -4,6 +4,7 @@ from app.recommender import Interaction, InteractionType
 from app.repository import (
     InMemoryInteractionRepository,
     SqlInteractionRepository,
+    build_interaction_repository,
 )
 
 
@@ -40,3 +41,20 @@ def test_sql_repository_round_trips_interactions() -> None:
     repository.add(second)
 
     assert repository.list_all() == (first, second)
+    assert repository.is_ready() is True
+
+
+def test_repository_factory_uses_memory_when_database_url_is_absent() -> None:
+    repository = build_interaction_repository(None)
+
+    assert isinstance(repository, InMemoryInteractionRepository)
+    assert repository.backend == "memory"
+    assert repository.is_ready() is True
+
+
+def test_repository_factory_uses_sql_when_database_url_is_configured() -> None:
+    repository = build_interaction_repository("sqlite+pysqlite:///:memory:")
+
+    assert isinstance(repository, SqlInteractionRepository)
+    assert repository.backend == "sql"
+    assert repository.is_ready() is True

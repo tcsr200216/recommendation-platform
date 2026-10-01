@@ -3,8 +3,9 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.recommender import Interaction, InteractionType, PopularityRecommender
-from app.repository import InMemoryInteractionRepository, InteractionRepository
+from app.repository import InteractionRepository, build_interaction_repository
 
 
 class InteractionRequest(BaseModel):
@@ -31,13 +32,30 @@ app = FastAPI(
     description="Production-oriented recommendation and ranking API.",
 )
 
-interaction_repository: InteractionRepository = InMemoryInteractionRepository()
+interaction_repository: InteractionRepository = build_interaction_repository(
+    settings.database_url
+)
 
 
 @app.get("/health", tags=["system"])
 async def health() -> dict[str, str]:
-    """Return a lightweight liveness response for local and container health checks."""
+    """Return process liveness without depending on external services."""
     return {"status": "ok"}
+
+
+@app.get("/ready", tags=["system"])
+async def ready() -> dict[str, str]:
+    """Return readiness only when the active persistence backend is reachable."""
+    if not interaction_repository.is_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interaction repository is unavailable.",
+        )
+
+    return {
+        "status": "ready",
+        "storage": interaction_repository.backend,
+    }
 
 
 @app.get("/", tags=["system"])
