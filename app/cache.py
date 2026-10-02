@@ -145,7 +145,7 @@ class RedisRecommendationCache:
         try:
             value = json.loads(payload)
             if not isinstance(value, list):
-                raise ValueError("Expected a list of recommendations.")
+                raise TypeError("Expected a list of recommendations.")
             results = []
             for item in value:
                 if (

@@ -83,7 +83,7 @@ class SqlInteractionRepository:
         return "sql"
 
     @classmethod
-    def from_url(cls, database_url: str) -> "SqlInteractionRepository":
+    def from_url(cls, database_url: str) -> SqlInteractionRepository:
         return cls(create_engine(database_url, pool_pre_ping=True))
 
     def create_schema(self) -> None:

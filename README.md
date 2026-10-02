@@ -20,6 +20,18 @@ then call `GET /recommendations/{user_id}?strategy=personalized&limit=10`.
 See `.env.example` for optional PostgreSQL and Redis settings. Default memory
 storage is process-local and loses interactions on restart.
 
+## Run the complete stack
+
+```bash
+docker compose up --build --detach --wait
+python scripts/smoke_test.py
+```
+
+This starts the non-root API container with PostgreSQL and Redis, waits for all
+health checks, and verifies the end-to-end REST flow. The API binds to
+`http://127.0.0.1:8000`. See [the deployment guide](docs/deployment.md) for
+configuration, hosted deployment, verification, rollback, and known limits.
+
 ## Offline evaluation
 
 ```bash
@@ -44,3 +56,9 @@ The synthetic fixture exercises repeated events, overlapping interests, sparse
 users, and unseen targets. Its scores are a reproducibility demonstration, not
 evidence of production quality or business impact. See
 [ADR-004](docs/architecture/ADR-004-offline-evaluation.md) for tradeoffs.
+
+## Continuous integration
+
+GitHub Actions runs unit tests and Ruff on every push and pull request. A second
+job builds the image, starts the PostgreSQL and Redis stack, runs the REST smoke
+test, captures logs on failure, and removes its volumes afterward.

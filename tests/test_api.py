@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-import app.main as main
+from app import main
 from app.cache import InMemoryRecommendationCache
 from app.recommender import Interaction, InteractionType
 from app.repository import InMemoryInteractionRepository
