@@ -38,6 +38,8 @@ class Recommendation:
 class PopularityRecommender:
     """Simple weighted-popularity baseline for cold-start recommendations."""
 
+    model_version = "weighted-popularity-v1"
+
     def __init__(self, interactions: Iterable[Interaction]) -> None:
         self._interactions = tuple(interactions)
 
@@ -76,6 +78,8 @@ class PersonalizedRecommender:
     If no personalized candidates exist, the original popularity baseline is
     used unchanged for cold-start and sparse-overlap scenarios.
     """
+
+    model_version = "user-cosine-v1"
 
     def __init__(self, interactions: Iterable[Interaction]) -> None:
         self._interactions = tuple(interactions)
