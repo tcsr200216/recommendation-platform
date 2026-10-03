@@ -32,6 +32,24 @@ health checks, and verifies the end-to-end REST flow. The API binds to
 `http://127.0.0.1:8000`. See [the deployment guide](docs/deployment.md) for
 configuration, hosted deployment, verification, rollback, and known limits.
 
+## Seed the SQL demo database
+
+After `docker compose up --build --detach --wait`, load the checked-in
+synthetic sample fixture into the **Compose demo database**:
+
+```bash
+docker compose exec -T api python -m scripts.seed_sample_data
+# Safe to rerun: if the exact fixture already exists, no events are duplicated.
+docker compose exec -T api python -m scripts.seed_sample_data
+curl -fsS 'http://127.0.0.1:8000/recommendations/alice?strategy=personalized&limit=5'
+```
+
+The seeder requires `DATABASE_URL` and refuses to write into a nonempty database
+unless its complete interaction sequence already matches the fixture. This avoids
+silently mixing demo interactions into an existing corpus. Use it only on an
+isolated demo database. Each fixture insert happens in one SQL transaction.
+The API smoke test still uses fresh isolated IDs and works after seeding.
+
 ## Offline evaluation
 
 ```bash

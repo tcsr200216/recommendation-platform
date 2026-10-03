@@ -99,6 +99,21 @@ class SqlInteractionRepository:
                 )
             )
 
+    def add_many(self, interactions: Sequence[Interaction]) -> None:
+        """Insert a fixture batch in one transaction, or roll it all back."""
+        rows = [
+            {
+                "user_id": interaction.user_id,
+                "item_id": interaction.item_id,
+                "interaction_type": interaction.interaction_type.value,
+            }
+            for interaction in interactions
+        ]
+        if not rows:
+            return
+        with self._engine.begin() as connection:
+            connection.execute(insert(interactions_table), rows)
+
     def list_all(self) -> tuple[Interaction, ...]:
         statement = select(
             interactions_table.c.user_id,

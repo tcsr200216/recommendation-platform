@@ -10,6 +10,8 @@ RUN groupadd --gid 10001 app && \
 
 COPY pyproject.toml README.md ./
 COPY app ./app
+COPY data ./data
+COPY scripts ./scripts
 
 RUN python -m pip install --no-cache-dir .
 

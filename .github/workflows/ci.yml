@@ -30,6 +30,10 @@ jobs:
           python-version: "3.12"
       - name: Build and start the stack
         run: docker compose up --build --detach --wait
+      - name: Seed synthetic interactions and verify rerun is safe
+        run: |
+          docker compose exec -T api python -m scripts.seed_sample_data
+          docker compose exec -T api python -m scripts.seed_sample_data
       - name: Exercise the deployed API
         run: python scripts/smoke_test.py --timeout 30
       - name: Show container logs on failure
