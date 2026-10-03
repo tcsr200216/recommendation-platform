@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client.parser import text_string_to_metric_families
 
 from app import main
 from app.cache import InMemoryRecommendationCache
@@ -33,6 +34,55 @@ def test_ready_reports_active_storage_backend(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready", "storage": "memory", "cache": "memory"}
+
+
+def _metric_value(payload: str, name: str, labels: dict[str, str]) -> float:
+    for family in text_string_to_metric_families(payload):
+        for sample in family.samples:
+            if sample.name == name and all(sample.labels.get(key) == value for key, value in labels.items()):
+                return sample.value
+    return 0.0
+
+
+def test_responses_include_generated_request_id_and_metrics_avoid_raw_paths() -> None:
+    client = TestClient(main.app)
+    before = client.get("/metrics").text
+    labels = {"method": "GET", "route": "/recommendations/{user_id}", "status": "404"}
+    initial = _metric_value(before, "recommendation_http_requests_total", labels)
+
+    response = client.get("/recommendations/a-user-that-must-not-be-a-metric-label")
+
+    assert response.status_code == 404
+    assert len(response.headers["X-Request-ID"]) == 36
+    metrics = client.get("/metrics").text
+    assert _metric_value(metrics, "recommendation_http_requests_total", labels) == initial + 1
+    assert "a-user-that-must-not-be-a-metric-label" not in metrics
+
+
+def test_metrics_report_live_then_cached_ranking(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    repository.add(Interaction("target-observed", "seen", InteractionType.LIKE))
+    repository.add(Interaction("neighbor-observed", "seen", InteractionType.LIKE))
+    repository.add(Interaction("neighbor-observed", "candidate", InteractionType.PURCHASE))
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    client = TestClient(main.app)
+
+    live_labels = {
+        "strategy": "personalized",
+        "model_version": "user-cosine-v1",
+        "source": "live",
+    }
+    cache_labels = {**live_labels, "source": "cache"}
+    before = client.get("/metrics").text
+    live_before = _metric_value(before, "recommendation_ranking_requests_total", live_labels)
+    cache_before = _metric_value(before, "recommendation_ranking_requests_total", cache_labels)
+
+    assert client.get("/recommendations/target-observed").status_code == 200
+    assert client.get("/recommendations/target-observed").status_code == 200
+
+    metrics = client.get("/metrics").text
+    assert _metric_value(metrics, "recommendation_ranking_requests_total", live_labels) == live_before + 1
+    assert _metric_value(metrics, "recommendation_ranking_requests_total", cache_labels) == cache_before + 1
 
 
 def test_ready_returns_503_when_repository_is_unavailable(monkeypatch) -> None:

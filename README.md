@@ -23,6 +23,10 @@ uvicorn app.main:app --reload
 Open `/docs` for the interactive API. Record events with `POST /interactions`,
 then call `GET /recommendations/{user_id}?strategy=personalized&limit=10`.
 `/health` checks liveness; `/ready` checks storage and cache dependencies.
+`/metrics` exposes Prometheus-compatible request, latency, cache, and ranking
+metrics. Every HTTP response includes a generated `X-Request-ID`, and completion
+logs carry the same ID as structured JSON for correlation. Health, readiness,
+and scrape traffic are excluded from request-rate and latency metrics.
 See `.env.example` for optional PostgreSQL and Redis settings. Default memory
 storage is process-local and loses interactions on restart.
 
@@ -86,3 +90,12 @@ evidence of production quality or business impact. See
 GitHub Actions runs unit tests and Ruff on every push and pull request. A second
 job builds the image, starts the PostgreSQL and Redis stack, runs the REST smoke
 test, captures logs on failure, and removes its volumes afterward.
+
+## Observability
+
+Scrape `GET /metrics` with Prometheus or any OpenMetrics-compatible collector.
+The custom metrics use bounded labels only: HTTP route templates rather than raw
+paths, fixed ranking strategies, explicit model versions, and cache outcomes.
+This keeps user IDs and item IDs out of telemetry and prevents unbounded series.
+See [ADR-008](docs/architecture/ADR-008-request-observability.md) for the design
+and operational tradeoffs.

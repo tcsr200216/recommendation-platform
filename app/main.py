@@ -8,6 +8,13 @@ from redis.exceptions import RedisError
 
 from app.cache import RecommendationCache, build_recommendation_cache
 from app.config import settings
+from app.observability import (
+    CACHE_OPERATIONS,
+    RANKING_REQUESTS,
+    RANKING_RESULTS,
+    HttpObservabilityMiddleware,
+    metrics_response,
+)
 from app.recommender import (
     Interaction,
     InteractionType,
@@ -40,6 +47,7 @@ app = FastAPI(
     version="0.1.0",
     description="Production-oriented recommendation and ranking API.",
 )
+app.add_middleware(HttpObservabilityMiddleware)
 
 interaction_repository: InteractionRepository = build_interaction_repository(
     settings.database_url
@@ -55,6 +63,12 @@ recommendation_cache: RecommendationCache = build_recommendation_cache(
 async def health() -> dict[str, str]:
     """Return process liveness without depending on external services."""
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    """Expose Prometheus metrics without adding the scrape itself to HTTP totals."""
+    return metrics_response()
 
 
 @app.get("/ready", tags=["system"])
@@ -102,7 +116,9 @@ async def record_interaction(payload: InteractionRequest) -> InteractionResponse
     interaction_repository.add(interaction)
     try:
         recommendation_cache.invalidate()
+        CACHE_OPERATIONS.labels("invalidate", "success").inc()
     except RedisError as exc:
+        CACHE_OPERATIONS.labels("invalidate", "error").inc()
         # Recording succeeded; do not imply that a retry would be harmless.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -135,9 +151,16 @@ async def get_recommendations(
     try:
         cached = recommendation_cache.get(user_id, strategy, model_version, limit)
     except RedisError:
+        CACHE_OPERATIONS.labels("get", "error").inc()
         cached = None
 
+    if cached is None:
+        CACHE_OPERATIONS.labels("get", "miss").inc()
+
     if cached is not None:
+        CACHE_OPERATIONS.labels("get", "hit").inc()
+        RANKING_REQUESTS.labels(strategy, model_version, "cache").inc()
+        RANKING_RESULTS.labels(strategy, "cache").inc(len(cached))
         return [
             RecommendationResponse(item_id=item.item_id, score=item.score)
             for item in cached
@@ -155,9 +178,13 @@ async def get_recommendations(
 
     try:
         recommendation_cache.set(user_id, strategy, model_version, limit, recommendations)
+        CACHE_OPERATIONS.labels("set", "success").inc()
     except RedisError:
+        CACHE_OPERATIONS.labels("set", "error").inc()
         # Cache is an optimization; ranking is still possible from source data.
-        pass
+
+    RANKING_REQUESTS.labels(strategy, model_version, "live").inc()
+    RANKING_RESULTS.labels(strategy, "live").inc(len(recommendations))
 
     return [
         RecommendationResponse(item_id=item.item_id, score=item.score)
