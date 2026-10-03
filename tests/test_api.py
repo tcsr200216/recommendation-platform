@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 
 from app import main
 from app.cache import InMemoryRecommendationCache
-from app.recommender import Interaction, InteractionType
+from app.recommender import Interaction, InteractionType, Recommendation
 from app.repository import InMemoryInteractionRepository
 
 
@@ -109,3 +109,26 @@ def test_recording_new_interaction_invalidates_cached_rankings(monkeypatch) -> N
     updated = client.get("/recommendations/target")
     assert updated.status_code == 200
     assert updated.json() == []
+
+
+def test_api_does_not_serve_results_from_an_older_model_version(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    for interaction in [
+        Interaction("target", "shared", InteractionType.LIKE),
+        Interaction("neighbor", "shared", InteractionType.LIKE),
+        Interaction("neighbor", "fresh", InteractionType.PURCHASE),
+    ]:
+        repository.add(interaction)
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    main.recommendation_cache.set(
+        "target",
+        "personalized",
+        "user-cosine-v0",
+        10,
+        [Recommendation("stale", 999.0)],
+    )
+
+    response = TestClient(main.app).get("/recommendations/target")
+
+    assert response.status_code == 200
+    assert [item["item_id"] for item in response.json()] == ["fresh"]

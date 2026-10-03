@@ -128,8 +128,12 @@ async def get_recommendations(
     strategy: Literal["personalized", "popular"] = Query(default="personalized"),
 ) -> list[RecommendationResponse]:
     """Use versioned cache-aside ranking, with a live fallback on cache read failure."""
+    recommender_type = (
+        PersonalizedRecommender if strategy == "personalized" else PopularityRecommender
+    )
+    model_version = recommender_type.model_version
     try:
-        cached = recommendation_cache.get(user_id, strategy, limit)
+        cached = recommendation_cache.get(user_id, strategy, model_version, limit)
     except RedisError:
         cached = None
 
@@ -146,15 +150,11 @@ async def get_recommendations(
             detail="No interactions are available yet.",
         )
 
-    recommender = (
-        PersonalizedRecommender(interactions)
-        if strategy == "personalized"
-        else PopularityRecommender(interactions)
-    )
+    recommender = recommender_type(interactions)
     recommendations = recommender.recommend(user_id=user_id, limit=limit)
 
     try:
-        recommendation_cache.set(user_id, strategy, limit, recommendations)
+        recommendation_cache.set(user_id, strategy, model_version, limit, recommendations)
     except RedisError:
         # Cache is an optimization; ranking is still possible from source data.
         pass

@@ -22,7 +22,7 @@ class RecommendationCache(Protocol):
         ...
 
     def get(
-        self, user_id: str, strategy: str, limit: int
+        self, user_id: str, strategy: str, model_version: str, limit: int
     ) -> tuple[Recommendation, ...] | None:
         ...
 
@@ -30,6 +30,7 @@ class RecommendationCache(Protocol):
         self,
         user_id: str,
         strategy: str,
+        model_version: str,
         limit: int,
         recommendations: Sequence[Recommendation],
     ) -> None:
@@ -43,10 +44,13 @@ class RecommendationCache(Protocol):
         ...
 
 
-def _key(namespace: str, user_id: str, strategy: str, limit: int) -> str:
+def _key(
+    namespace: str, user_id: str, strategy: str, model_version: str, limit: int
+) -> str:
+    _validate_model_version(model_version)
     # Hash the user ID to avoid delimiter ambiguity and exposing raw IDs in Redis keys.
     user_token = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
-    return f"{namespace}:{strategy}:{limit}:{user_token}"
+    return f"{namespace}:{strategy}:{model_version}:{limit}:{user_token}"
 
 
 class InMemoryRecommendationCache:
@@ -69,9 +73,9 @@ class InMemoryRecommendationCache:
         return "memory"
 
     def get(
-        self, user_id: str, strategy: str, limit: int
+        self, user_id: str, strategy: str, model_version: str, limit: int
     ) -> tuple[Recommendation, ...] | None:
-        key = _key(self._namespace, user_id, strategy, limit)
+        key = _key(self._namespace, user_id, strategy, model_version, limit)
         entry = self._entries.get(key)
         if entry is None:
             return None
@@ -85,10 +89,11 @@ class InMemoryRecommendationCache:
         self,
         user_id: str,
         strategy: str,
+        model_version: str,
         limit: int,
         recommendations: Sequence[Recommendation],
     ) -> None:
-        self._entries[_key(self._namespace, user_id, strategy, limit)] = (
+        self._entries[_key(self._namespace, user_id, strategy, model_version, limit)] = (
             self._clock() + self._ttl_seconds,
             tuple(recommendations),
         )
@@ -105,6 +110,13 @@ def _validate_settings(ttl_seconds: int, namespace: str) -> None:
         raise ValueError("Cache TTL must be greater than zero.")
     if not re.fullmatch(r"[A-Za-z0-9:_-]+", namespace):
         raise ValueError("Cache namespace must contain only letters, digits, colon, dash or underscore.")
+
+
+def _validate_model_version(model_version: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", model_version):
+        raise ValueError(
+            "Model version must contain only letters, digits, dot, dash or underscore."
+        )
 
 
 class RedisRecommendationCache:
@@ -136,9 +148,9 @@ class RedisRecommendationCache:
         return "redis"
 
     def get(
-        self, user_id: str, strategy: str, limit: int
+        self, user_id: str, strategy: str, model_version: str, limit: int
     ) -> tuple[Recommendation, ...] | None:
-        key = _key(self._namespace, user_id, strategy, limit)
+        key = _key(self._namespace, user_id, strategy, model_version, limit)
         payload = self._client.get(key)
         if payload is None:
             return None
@@ -167,6 +179,7 @@ class RedisRecommendationCache:
         self,
         user_id: str,
         strategy: str,
+        model_version: str,
         limit: int,
         recommendations: Sequence[Recommendation],
     ) -> None:
@@ -179,7 +192,7 @@ class RedisRecommendationCache:
             separators=(",", ":"),
         )
         self._client.set(
-            _key(self._namespace, user_id, strategy, limit),
+            _key(self._namespace, user_id, strategy, model_version, limit),
             payload,
             ex=self._ttl_seconds,
         )

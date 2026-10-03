@@ -3,6 +3,12 @@
 FastAPI service with weighted popularity, user cosine similarity, interaction
 storage (memory or SQL), and versioned recommendation caching (memory or Redis).
 
+Cache entries include the selected ranker's explicit `model_version`. Changing
+ranking semantics and bumping that version produces a cache miss instead of
+serving scores created by the previous algorithm. The configured cache namespace
+still provides a deployment-wide compatibility boundary. See
+[ADR-007](docs/architecture/ADR-007-model-versioned-cache-keys.md).
+
 ## Run locally
 
 Use Python 3.12+. From the repository root:
