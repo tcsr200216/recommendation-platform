@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from redis.exceptions import RedisError
 
@@ -10,6 +10,7 @@ from app.cache import RecommendationCache, build_recommendation_cache
 from app.config import settings
 from app.observability import (
     CACHE_OPERATIONS,
+    INTERACTION_INGESTIONS,
     RANKING_REQUESTS,
     RANKING_RESULTS,
     HttpObservabilityMiddleware,
@@ -21,7 +22,11 @@ from app.recommender import (
     PersonalizedRecommender,
     PopularityRecommender,
 )
-from app.repository import InteractionRepository, build_interaction_repository
+from app.repository import (
+    IdempotencyConflictError,
+    InteractionRepository,
+    build_interaction_repository,
+)
 
 
 class InteractionRequest(BaseModel):
@@ -34,6 +39,7 @@ class InteractionResponse(BaseModel):
     user_id: str
     item_id: str
     interaction_type: InteractionType
+    idempotency_key: str | None
     status: str
 
 
@@ -106,14 +112,41 @@ async def root() -> dict[str, str]:
     status_code=status.HTTP_201_CREATED,
     tags=["interactions"],
 )
-async def record_interaction(payload: InteractionRequest) -> InteractionResponse:
-    """Record a user-item interaction and invalidate any cached rankings."""
+async def record_interaction(
+    payload: InteractionRequest,
+    response: Response,
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        ),
+    ] = None,
+) -> InteractionResponse:
+    """Record an interaction once and safely replay client retries."""
     interaction = Interaction(
         user_id=payload.user_id,
         item_id=payload.item_id,
         interaction_type=payload.interaction_type,
     )
-    interaction_repository.add(interaction)
+    try:
+        inserted = interaction_repository.add(interaction, idempotency_key)
+    except IdempotencyConflictError as exc:
+        INTERACTION_INGESTIONS.labels("conflict").inc()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Idempotency-Key was already used with a different interaction.",
+        ) from exc
+
+    outcome = "recorded" if inserted else "replayed"
+    INTERACTION_INGESTIONS.labels(outcome).inc()
+    if not inserted:
+        response.status_code = status.HTTP_200_OK
+
+    # Retry invalidation even for a replay. This repairs the case where storage
+    # committed but the first request failed while invalidating the cache.
     try:
         recommendation_cache.invalidate()
         CACHE_OPERATIONS.labels("invalidate", "success").inc()
@@ -129,7 +162,8 @@ async def record_interaction(payload: InteractionRequest) -> InteractionResponse
         user_id=interaction.user_id,
         item_id=interaction.item_id,
         interaction_type=interaction.interaction_type,
-        status="recorded",
+        idempotency_key=idempotency_key,
+        status=outcome,
     )
 
 

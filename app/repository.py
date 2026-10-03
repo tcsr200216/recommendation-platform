@@ -15,7 +15,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.recommender import Interaction, InteractionType
 
@@ -28,8 +28,8 @@ class InteractionRepository(Protocol):
         """Return a short name for the active persistence backend."""
         ...
 
-    def add(self, interaction: Interaction) -> None:
-        """Persist one interaction."""
+    def add(self, interaction: Interaction, idempotency_key: str | None = None) -> bool:
+        """Persist once, returning False for an exact idempotent replay."""
         ...
 
     def list_all(self) -> Sequence[Interaction]:
@@ -46,13 +46,22 @@ class InMemoryInteractionRepository:
 
     def __init__(self) -> None:
         self._interactions: list[Interaction] = []
+        self._idempotency_records: dict[str, Interaction] = {}
 
     @property
     def backend(self) -> str:
         return "memory"
 
-    def add(self, interaction: Interaction) -> None:
+    def add(self, interaction: Interaction, idempotency_key: str | None = None) -> bool:
+        if idempotency_key is not None:
+            existing = self._idempotency_records.get(idempotency_key)
+            if existing is not None:
+                if existing != interaction:
+                    raise IdempotencyConflictError(idempotency_key)
+                return False
+            self._idempotency_records[idempotency_key] = interaction
         self._interactions.append(interaction)
+        return True
 
     def list_all(self) -> tuple[Interaction, ...]:
         return tuple(self._interactions)
@@ -70,6 +79,21 @@ interactions_table = Table(
     Column("item_id", String(128), nullable=False, index=True),
     Column("interaction_type", String(32), nullable=False),
 )
+idempotency_table = Table(
+    "interaction_idempotency",
+    metadata,
+    Column("idempotency_key", String(128), primary_key=True),
+    Column("user_id", String(128), nullable=False),
+    Column("item_id", String(128), nullable=False),
+    Column("interaction_type", String(32), nullable=False),
+)
+
+
+class IdempotencyConflictError(ValueError):
+    """Raised when a key is reused for a different interaction payload."""
+
+    def __init__(self, idempotency_key: str) -> None:
+        super().__init__(f"Idempotency key '{idempotency_key}' is already used.")
 
 
 class SqlInteractionRepository:
@@ -89,15 +113,44 @@ class SqlInteractionRepository:
     def create_schema(self) -> None:
         metadata.create_all(self._engine)
 
-    def add(self, interaction: Interaction) -> None:
-        with self._engine.begin() as connection:
-            connection.execute(
-                insert(interactions_table).values(
-                    user_id=interaction.user_id,
-                    item_id=interaction.item_id,
-                    interaction_type=interaction.interaction_type.value,
+    def add(self, interaction: Interaction, idempotency_key: str | None = None) -> bool:
+        try:
+            with self._engine.begin() as connection:
+                if idempotency_key is not None:
+                    connection.execute(
+                        insert(idempotency_table).values(
+                            idempotency_key=idempotency_key,
+                            user_id=interaction.user_id,
+                            item_id=interaction.item_id,
+                            interaction_type=interaction.interaction_type.value,
+                        )
+                    )
+                connection.execute(
+                    insert(interactions_table).values(
+                        user_id=interaction.user_id,
+                        item_id=interaction.item_id,
+                        interaction_type=interaction.interaction_type.value,
+                    )
                 )
-            )
+            return True
+        except IntegrityError:
+            if idempotency_key is None:
+                raise
+
+        statement = select(
+            idempotency_table.c.user_id,
+            idempotency_table.c.item_id,
+            idempotency_table.c.interaction_type,
+        ).where(idempotency_table.c.idempotency_key == idempotency_key)
+        with self._engine.connect() as connection:
+            row = connection.execute(statement).one_or_none()
+
+        if row is None:
+            raise SQLAlchemyError("Idempotency conflict occurred without a durable record.")
+        existing = Interaction(row.user_id, row.item_id, InteractionType(row.interaction_type))
+        if existing != interaction:
+            raise IdempotencyConflictError(idempotency_key)
+        return False
 
     def add_many(self, interactions: Sequence[Interaction]) -> None:
         """Insert a fixture batch in one transaction, or roll it all back."""

@@ -36,6 +36,11 @@ RANKING_RESULTS = Counter(
     "Individual recommendations returned by strategy and source.",
     ("strategy", "source"),
 )
+INTERACTION_INGESTIONS = Counter(
+    "recommendation_interaction_ingestions_total",
+    "Interaction ingestion attempts by durable outcome.",
+    ("outcome",),
+)
 
 _UNMEASURED_PATHS = frozenset({"/health", "/ready", "/metrics"})
 

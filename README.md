@@ -30,6 +30,14 @@ and scrape traffic are excluded from request-rate and latency metrics.
 See `.env.example` for optional PostgreSQL and Redis settings. Default memory
 storage is process-local and loses interactions on restart.
 
+For retry-safe ingestion, send a stable `Idempotency-Key` header with each logical
+event. The first request returns `201` with `status: recorded`; an exact retry
+returns `200` with `status: replayed` and does not duplicate the interaction. Reusing
+the same key for a different payload returns `409`. Requests without the header keep
+append-only event behavior. SQL deployments store idempotency records durably and
+atomically with the interaction. See
+[ADR-009](docs/architecture/ADR-009-idempotent-interaction-ingestion.md).
+
 ## Run the complete stack
 
 ```bash

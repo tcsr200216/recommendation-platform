@@ -161,6 +161,47 @@ def test_recording_new_interaction_invalidates_cached_rankings(monkeypatch) -> N
     assert updated.json() == []
 
 
+def test_interaction_idempotency_replays_without_duplicate(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    client = TestClient(main.app)
+    payload = {"user_id": "u1", "item_id": "item-a", "interaction_type": "click"}
+    headers = {"Idempotency-Key": "client-event-123"}
+
+    first = client.post("/interactions", json=payload, headers=headers)
+    replay = client.post("/interactions", json=payload, headers=headers)
+
+    assert first.status_code == 201
+    assert first.json()["status"] == "recorded"
+    assert first.json()["idempotency_key"] == "client-event-123"
+    assert replay.status_code == 200
+    assert replay.json()["status"] == "replayed"
+    assert repository.list_all() == (Interaction("u1", "item-a", InteractionType.CLICK),)
+
+
+def test_interaction_idempotency_rejects_different_payload(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    client = TestClient(main.app)
+    headers = {"Idempotency-Key": "client-event-123"}
+
+    first = client.post(
+        "/interactions",
+        json={"user_id": "u1", "item_id": "item-a", "interaction_type": "click"},
+        headers=headers,
+    )
+    conflict = client.post(
+        "/interactions",
+        json={"user_id": "u1", "item_id": "item-b", "interaction_type": "click"},
+        headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert conflict.status_code == 409
+    assert "different interaction" in conflict.json()["detail"]
+    assert len(repository.list_all()) == 1
+
+
 def test_api_does_not_serve_results_from_an_older_model_version(monkeypatch) -> None:
     repository = InMemoryInteractionRepository()
     for interaction in [
