@@ -8,7 +8,7 @@ from app.cache import (
     RedisRecommendationCache,
     build_recommendation_cache,
 )
-from app.recommender import Recommendation
+from app.recommender import Recommendation, RecommendationReason
 
 
 class FakeRedis:
@@ -82,7 +82,14 @@ def test_redis_cache_round_trip_ttl_and_namespace_invalidation() -> None:
     client = FakeRedis()
     cache = RedisRecommendationCache(client, ttl_seconds=60, namespace="recommendations:v2")
     other = RedisRecommendationCache(client, ttl_seconds=60, namespace="other:v1")
-    result = [Recommendation("item-a", 0.75)]
+    result = [
+        Recommendation(
+            "item-a",
+            0.75,
+            RecommendationReason.SIMILAR_USERS,
+            2,
+        )
+    ]
     cache.set("alice", "popular", "weighted-popularity-v1", 10, result)
     cache.set("bob", "personalized", "user-cosine-v1", 5, [])
     other.set("alice", "popular", "weighted-popularity-v1", 10, result)
@@ -104,7 +111,19 @@ def test_malformed_redis_payload_is_deleted_and_treated_as_miss() -> None:
     cache = RedisRecommendationCache(client)
     cache.set("user", "popular", "weighted-popularity-v1", 10, [Recommendation("valid", 1.0)])
     key = next(iter(client.entries))
-    for payload in ("not json", json.dumps({"item_id": "a"}), json.dumps([{"item_id": "x", "score": "bad"}])):
+    for payload in (
+        "not json",
+        json.dumps({"item_id": "a"}),
+        json.dumps([{"item_id": "x", "score": "bad"}]),
+        json.dumps([
+            {
+                "item_id": "x",
+                "score": 1.0,
+                "reason": "private_neighbor",
+                "supporting_item_count": 0,
+            }
+        ]),
+    ):
         client.entries[key] = payload
         assert cache.get("user", "popular", "weighted-popularity-v1", 10) is None
         assert key not in client.entries

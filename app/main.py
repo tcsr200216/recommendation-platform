@@ -21,6 +21,7 @@ from app.recommender import (
     InteractionType,
     PersonalizedRecommender,
     PopularityRecommender,
+    RecommendationReason,
 )
 from app.repository import (
     IdempotencyConflictError,
@@ -46,6 +47,8 @@ class InteractionResponse(BaseModel):
 class RecommendationResponse(BaseModel):
     item_id: str
     score: float
+    reason: RecommendationReason
+    supporting_item_count: int
 
 
 app = FastAPI(
@@ -196,7 +199,12 @@ async def get_recommendations(
         RANKING_REQUESTS.labels(strategy, model_version, "cache").inc()
         RANKING_RESULTS.labels(strategy, "cache").inc(len(cached))
         return [
-            RecommendationResponse(item_id=item.item_id, score=item.score)
+            RecommendationResponse(
+                item_id=item.item_id,
+                score=item.score,
+                reason=item.reason,
+                supporting_item_count=item.supporting_item_count,
+            )
             for item in cached
         ]
 
@@ -221,6 +229,11 @@ async def get_recommendations(
     RANKING_RESULTS.labels(strategy, "live").inc(len(recommendations))
 
     return [
-        RecommendationResponse(item_id=item.item_id, score=item.score)
+        RecommendationResponse(
+            item_id=item.item_id,
+            score=item.score,
+            reason=item.reason,
+            supporting_item_count=item.supporting_item_count,
+        )
         for item in recommendations
     ]

@@ -69,7 +69,7 @@ def test_metrics_report_live_then_cached_ranking(monkeypatch) -> None:
 
     live_labels = {
         "strategy": "personalized",
-        "model_version": "user-cosine-v1",
+        "model_version": "user-cosine-v2",
         "source": "live",
     }
     cache_labels = {**live_labels, "source": "cache"}
@@ -122,8 +122,12 @@ def test_api_exposes_personalized_ranking_and_original_popularity(monkeypatch) -
 
     assert personalized.status_code == 200
     assert [item["item_id"] for item in personalized.json()] == ["niche"]
+    assert personalized.json()[0]["reason"] == "similar_users"
+    assert personalized.json()[0]["supporting_item_count"] == 1
     assert popular.status_code == 200
     assert [item["item_id"] for item in popular.json()] == ["popular", "niche"]
+    assert all(item["reason"] == "popular" for item in popular.json())
+    assert all(item["supporting_item_count"] == 0 for item in popular.json())
 
 
 def test_api_rejects_unknown_ranking_strategy(monkeypatch) -> None:

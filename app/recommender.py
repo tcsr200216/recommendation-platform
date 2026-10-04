@@ -14,6 +14,12 @@ class InteractionType(StrEnum):
     PURCHASE = "purchase"
 
 
+class RecommendationReason(StrEnum):
+    POPULAR = "popular"
+    SIMILAR_USERS = "similar_users"
+    POPULARITY_FALLBACK = "popularity_fallback"
+
+
 INTERACTION_WEIGHTS: dict[InteractionType, float] = {
     InteractionType.VIEW: 1.0,
     InteractionType.CLICK: 2.0,
@@ -33,12 +39,14 @@ class Interaction:
 class Recommendation:
     item_id: str
     score: float
+    reason: RecommendationReason = RecommendationReason.POPULAR
+    supporting_item_count: int = 0
 
 
 class PopularityRecommender:
     """Simple weighted-popularity baseline for cold-start recommendations."""
 
-    model_version = "weighted-popularity-v1"
+    model_version = "weighted-popularity-v2"
 
     def __init__(self, interactions: Iterable[Interaction]) -> None:
         self._interactions = tuple(interactions)
@@ -58,7 +66,11 @@ class PopularityRecommender:
             scores[interaction.item_id] += INTERACTION_WEIGHTS[interaction.interaction_type]
 
         ranked = (
-            Recommendation(item_id=item_id, score=score)
+            Recommendation(
+                item_id=item_id,
+                score=score,
+                reason=RecommendationReason.POPULAR,
+            )
             for item_id, score in scores.items()
             if item_id not in seen_items
         )
@@ -79,7 +91,7 @@ class PersonalizedRecommender:
     used unchanged for cold-start and sparse-overlap scenarios.
     """
 
-    model_version = "user-cosine-v1"
+    model_version = "user-cosine-v2"
 
     def __init__(self, interactions: Iterable[Interaction]) -> None:
         self._interactions = tuple(interactions)
@@ -99,13 +111,14 @@ class PersonalizedRecommender:
 
         target = self._profiles.get(user_id)
         if not target:
-            return self._fallback.recommend(user_id, limit)
+            return self._fallback_recommend(user_id, limit)
 
         target_norm = math.sqrt(math.fsum(value * value for value in target.values()))
         if target_norm == 0:
-            return self._fallback.recommend(user_id, limit)
+            return self._fallback_recommend(user_id, limit)
 
         scores: dict[str, float] = defaultdict(float)
+        evidence: dict[str, set[str]] = defaultdict(set)
         for neighbor_id, profile in self._profiles.items():
             if neighbor_id == user_id:
                 continue
@@ -123,14 +136,34 @@ class PersonalizedRecommender:
             if similarity <= 0:
                 continue
 
+            shared_items = target.keys() & profile.keys()
             for item_id, strength in profile.items():
                 if item_id not in target:
                     scores[item_id] += similarity * strength
+                    evidence[item_id].update(shared_items)
 
         if not scores:
-            return self._fallback.recommend(user_id, limit)
+            return self._fallback_recommend(user_id, limit)
 
         return sorted(
-            (Recommendation(item_id=item_id, score=score) for item_id, score in scores.items()),
+            (
+                Recommendation(
+                    item_id=item_id,
+                    score=score,
+                    reason=RecommendationReason.SIMILAR_USERS,
+                    supporting_item_count=len(evidence[item_id]),
+                )
+                for item_id, score in scores.items()
+            ),
             key=lambda recommendation: (-recommendation.score, recommendation.item_id),
         )[:limit]
+
+    def _fallback_recommend(self, user_id: str, limit: int) -> list[Recommendation]:
+        return [
+            Recommendation(
+                item_id=item.item_id,
+                score=item.score,
+                reason=RecommendationReason.POPULARITY_FALLBACK,
+            )
+            for item in self._fallback.recommend(user_id, limit)
+        ]

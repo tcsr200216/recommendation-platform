@@ -11,7 +11,7 @@ from typing import Protocol
 from redis import Redis
 from redis.exceptions import RedisError
 
-from app.recommender import Recommendation
+from app.recommender import Recommendation, RecommendationReason
 
 
 class RecommendationCache(Protocol):
@@ -166,9 +166,19 @@ class RedisRecommendationCache:
                     or not item["item_id"]
                     or type(item.get("score")) not in (float, int)
                     or not math.isfinite(item["score"])
+                    or item.get("reason") not in RecommendationReason
+                    or type(item.get("supporting_item_count")) is not int
+                    or item["supporting_item_count"] < 0
                 ):
                     raise ValueError("Invalid cached recommendation.")
-                results.append(Recommendation(item_id=item["item_id"], score=float(item["score"])))
+                results.append(
+                    Recommendation(
+                        item_id=item["item_id"],
+                        score=float(item["score"]),
+                        reason=RecommendationReason(item["reason"]),
+                        supporting_item_count=item["supporting_item_count"],
+                    )
+                )
             return tuple(results)
         except (ValueError, TypeError, OverflowError):
             # Do not serve invalid or incompatible cached results.
@@ -185,7 +195,12 @@ class RedisRecommendationCache:
     ) -> None:
         payload = json.dumps(
             [
-                {"item_id": item.item_id, "score": item.score}
+                {
+                    "item_id": item.item_id,
+                    "score": item.score,
+                    "reason": item.reason,
+                    "supporting_item_count": item.supporting_item_count,
+                }
                 for item in recommendations
             ],
             allow_nan=False,

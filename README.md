@@ -22,6 +22,12 @@ uvicorn app.main:app --reload
 
 Open `/docs` for the interactive API. Record events with `POST /interactions`,
 then call `GET /recommendations/{user_id}?strategy=personalized&limit=10`.
+Each result explains whether it came from similar-user collaborative evidence,
+the explicit popularity strategy, or a cold/sparse-user popularity fallback.
+Collaborative results include a supporting-overlap count, never target-history
+item IDs or neighbor user IDs. This makes fallback and evidence strength visible
+without turning the endpoint into a profile-disclosure path. See
+[ADR-011](docs/architecture/ADR-011-privacy-safe-recommendation-explanations.md).
 `/health` checks liveness; `/ready` checks storage and cache dependencies.
 `/metrics` exposes Prometheus-compatible request, latency, cache, and ranking
 metrics. Every HTTP response includes a generated `X-Request-ID`, and completion

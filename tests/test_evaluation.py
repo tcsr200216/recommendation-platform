@@ -26,7 +26,7 @@ def test_known_rank_two_metrics_include_sparse_users_only_as_training():
     assert report.evaluated_users == 1
     assert report.skipped_sparse_users == 3
     assert report.total_users == 4
-    assert report.model_version == "weighted-popularity-v1"
+    assert report.model_version == "weighted-popularity-v2"
     assert evaluate(events, k=1, strategy="popular").hit_rate_at_k == 0.0
 
 
@@ -37,7 +37,7 @@ def test_personalized_uses_neighbor_signal():
     assert report.hit_rate_at_k == 0.5
     assert report.mrr_at_k == 0.5
     assert report.cold_target_users == 1
-    assert report.model_version == "user-cosine-v1"
+    assert report.model_version == "user-cosine-v2"
 
 
 def test_unknown_targets_are_misses_and_not_dropped():
@@ -82,8 +82,8 @@ def test_build_report_carries_reproducibility_metadata_and_model_versions():
         "k": 2,
     }
     assert [result["model_version"] for result in report["results"]] == [
-        "weighted-popularity-v1",
-        "user-cosine-v1",
+        "weighted-popularity-v2",
+        "user-cosine-v2",
     ]
 
 

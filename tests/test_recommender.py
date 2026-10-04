@@ -5,6 +5,7 @@ from app.recommender import (
     InteractionType,
     PersonalizedRecommender,
     PopularityRecommender,
+    RecommendationReason,
 )
 
 
@@ -20,6 +21,8 @@ def test_weighted_signals_rank_stronger_interactions_higher() -> None:
     assert [item.item_id for item in recommendations] == ["item-b", "item-a"]
     assert recommendations[0].score == 5.0
     assert recommendations[1].score == 3.0
+    assert all(item.reason == RecommendationReason.POPULAR for item in recommendations)
+    assert all(item.supporting_item_count == 0 for item in recommendations)
 
 
 def test_seen_items_are_excluded_for_target_user() -> None:
@@ -82,6 +85,8 @@ def test_personalized_ranker_uses_neighbor_overlap_not_global_popularity() -> No
 
     assert [item.item_id for item in result] == ["niche"]
     assert result[0].score > 0
+    assert result[0].reason == RecommendationReason.SIMILAR_USERS
+    assert result[0].supporting_item_count == 1
 
 
 def test_personalized_ranker_uses_stronger_candidate_interactions() -> None:
@@ -129,26 +134,32 @@ def test_personalized_ranker_excludes_seen_and_breaks_ties_by_item_id() -> None:
     assert [item.item_id for item in result] == ["item-a"]
 
 
-def test_personalized_cold_start_matches_popularity_exactly() -> None:
+def test_personalized_cold_start_is_labeled_as_popularity_fallback() -> None:
     interactions = [
         Interaction("other", "item-a", InteractionType.VIEW),
         Interaction("other", "item-b", InteractionType.PURCHASE),
     ]
 
-    assert PersonalizedRecommender(interactions).recommend("new-user") == (
-        PopularityRecommender(interactions).recommend("new-user")
-    )
+    result = PersonalizedRecommender(interactions).recommend("new-user")
+    baseline = PopularityRecommender(interactions).recommend("new-user")
+    assert [(item.item_id, item.score) for item in result] == [
+        (item.item_id, item.score) for item in baseline
+    ]
+    assert all(item.reason == RecommendationReason.POPULARITY_FALLBACK for item in result)
 
 
-def test_personalized_sparse_overlap_falls_back_to_popularity_exactly() -> None:
+def test_personalized_sparse_overlap_is_labeled_as_popularity_fallback() -> None:
     interactions = [
         Interaction("target", "seen", InteractionType.VIEW),
         Interaction("other", "unseen", InteractionType.PURCHASE),
     ]
 
-    assert PersonalizedRecommender(interactions).recommend("target") == (
-        PopularityRecommender(interactions).recommend("target")
-    )
+    result = PersonalizedRecommender(interactions).recommend("target")
+    baseline = PopularityRecommender(interactions).recommend("target")
+    assert [(item.item_id, item.score) for item in result] == [
+        (item.item_id, item.score) for item in baseline
+    ]
+    assert all(item.reason == RecommendationReason.POPULARITY_FALLBACK for item in result)
 
 
 @pytest.mark.parametrize("limit", [0, -1])

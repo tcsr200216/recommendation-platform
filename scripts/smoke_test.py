@@ -68,6 +68,10 @@ def main() -> None:
         raise RuntimeError(
             f"unexpected recommendations: status={status}, payload={recommendations}"
         )
+    if recommendations[0]["reason"] != "similar_users":
+        raise RuntimeError(f"unexpected explanation: {recommendations[0]}")
+    if recommendations[0]["supporting_item_count"] != 1:
+        raise RuntimeError(f"unexpected supporting evidence: {recommendations[0]}")
     print("Smoke test passed: readiness, interaction writes, cache invalidation, and ranking work.")
 
 
