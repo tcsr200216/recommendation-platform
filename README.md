@@ -72,6 +72,8 @@ The API smoke test still uses fresh isolated IDs and works after seeding.
 
 ```bash
 python -m app.evaluation data/sample_interactions.json --k 5
+python -m app.evaluation data/sample_interactions.json --k 5 \
+  --output reports/sample-evaluation.json
 python -m pytest
 ```
 
@@ -86,12 +88,20 @@ top K. MRR@K averages its reciprocal rank (zero for a miss). Sparse users remain
 in training but are excluded from the metric denominator and counted explicitly.
 Targets absent from the training catalog count as misses and are reported as
 `cold_target_users`. With no eligible users, metrics are JSON null.
-Reports include strategy, algorithm version, K, and user counts.
+Reports include a schema version, canonical SHA-256 dataset version, interaction
+count, split version, K, strategy, algorithm version, and user counts. The data
+fingerprint is independent of JSON row order while preserving duplicate-event
+counts, so equivalent exports have the same identity without hiding repeated
+behavior. CI regenerates and compares the checked
+[`reports/sample-evaluation.json`](reports/sample-evaluation.json) artifact to
+catch fixture, evaluator, model-version, or metric drift in review.
 
 The synthetic fixture exercises repeated events, overlapping interests, sparse
 users, and unseen targets. Its scores are a reproducibility demonstration, not
 evidence of production quality or business impact. See
 [ADR-004](docs/architecture/ADR-004-offline-evaluation.md) for tradeoffs.
+The versioned artifact decision is documented in
+[ADR-010](docs/architecture/ADR-010-versioned-evaluation-artifacts.md).
 
 ## Continuous integration
 

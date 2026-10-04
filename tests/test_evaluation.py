@@ -1,6 +1,6 @@
 import pytest
 
-from app.evaluation import evaluate, leave_one_out
+from app.evaluation import build_report, dataset_version, evaluate, leave_one_out
 from app.recommender import Interaction, InteractionType
 
 
@@ -58,6 +58,33 @@ def test_no_eligible_users_returns_null_metrics(events):
 def test_deterministic_report_under_input_reordering():
     events = [event("u", "a"), event("u", "z"), event("n", "a"), event("n", "z")]
     assert evaluate(events) == evaluate(reversed(events))
+
+
+def test_dataset_version_is_order_independent_but_preserves_duplicate_counts():
+    events = [event("u", "a"), event("u", "z"), event("u", "a")]
+    version = dataset_version(events)
+    assert version.startswith("sha256:")
+    assert len(version) == len("sha256:") + 64
+    assert version == dataset_version(reversed(events))
+    assert version != dataset_version(events[:-1])
+
+
+def test_build_report_carries_reproducibility_metadata_and_model_versions():
+    events = [event("u", "a"), event("u", "z"), event("n", "a"), event("n", "z")]
+    report = build_report(events, k=2)
+    assert report["report_schema_version"] == "1"
+    assert report["dataset"] == {
+        "version": dataset_version(events),
+        "interaction_count": 4,
+    }
+    assert report["evaluation"] == {
+        "split_version": "leave-one-out-lexicographic-v1",
+        "k": 2,
+    }
+    assert [result["model_version"] for result in report["results"]] == [
+        "weighted-popularity-v1",
+        "user-cosine-v1",
+    ]
 
 
 @pytest.mark.parametrize("k", [0, -1, True, 1.5])

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -27,6 +28,29 @@ class EvaluationReport:
     cold_target_users: int
     hit_rate_at_k: float | None
     mrr_at_k: float | None
+
+
+REPORT_SCHEMA_VERSION = "1"
+SPLIT_VERSION = "leave-one-out-lexicographic-v1"
+
+
+def dataset_version(interactions: Iterable[Interaction]) -> str:
+    """Return an order-independent fingerprint that preserves duplicate counts."""
+    counts = Counter(
+        (event.user_id, event.item_id, event.interaction_type.value)
+        for event in interactions
+    )
+    canonical_rows = [
+        {
+            "user_id": user_id,
+            "item_id": item_id,
+            "interaction_type": interaction_type,
+            "count": count,
+        }
+        for (user_id, item_id, interaction_type), count in sorted(counts.items())
+    ]
+    canonical = json.dumps(canonical_rows, sort_keys=True, separators=(",", ":"))
+    return f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
 
 
 def leave_one_out(
@@ -85,11 +109,34 @@ def evaluate(
     )
 
 
+def build_report(
+    interactions: Iterable[Interaction], k: int = 10, strategy: str = "both",
+) -> dict[str, object]:
+    """Build a stable, machine-readable evaluation artifact."""
+    events = tuple(interactions)
+    if strategy not in {"personalized", "popular", "both"}:
+        raise ValueError("strategy must be personalized, popular, or both")
+    strategies = ["popular", "personalized"] if strategy == "both" else [strategy]
+    return {
+        "report_schema_version": REPORT_SCHEMA_VERSION,
+        "dataset": {
+            "version": dataset_version(events),
+            "interaction_count": len(events),
+        },
+        "evaluation": {
+            "split_version": SPLIT_VERSION,
+            "k": k,
+        },
+        "results": [asdict(evaluate(events, k, selected)) for selected in strategies],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("dataset", type=Path, help="JSON array of interaction objects")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--strategy", choices=["personalized", "popular", "both"], default="both")
+    parser.add_argument("--output", type=Path, help="also write the JSON report to this path")
     args = parser.parse_args()
     try:
         rows = json.loads(args.dataset.read_text())
@@ -100,11 +147,14 @@ def main() -> None:
         if any(not isinstance(e.user_id, str) or not e.user_id.strip()
                or not isinstance(e.item_id, str) or not e.item_id.strip() for e in events):
             raise ValueError("user_id and item_id must be nonempty strings")
-        strategies = ["popular", "personalized"] if args.strategy == "both" else [args.strategy]
-        reports = [asdict(evaluate(events, args.k, s)) for s in strategies]
+        report = build_report(events, args.k, args.strategy)
+        rendered = json.dumps(report, indent=2, allow_nan=False) + "\n"
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(rendered)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         parser.error(str(exc))
-    print(json.dumps(reports, indent=2, allow_nan=False))
+    print(rendered, end="")
 
 
 if __name__ == "__main__":

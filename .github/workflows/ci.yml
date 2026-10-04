@@ -20,6 +20,10 @@ jobs:
       - run: python -m pip install -e '.[dev]'
       - run: python -m pytest
       - run: python -m ruff check .
+      - name: Verify the checked evaluation artifact is reproducible
+        run: |
+          python -m app.evaluation data/sample_interactions.json --k 5 --output /tmp/sample-evaluation.json
+          diff -u reports/sample-evaluation.json /tmp/sample-evaluation.json
 
   container-integration:
     runs-on: ubuntu-latest
