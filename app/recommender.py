@@ -4,6 +4,7 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 
 
@@ -33,6 +34,14 @@ class Interaction:
     user_id: str
     item_id: str
     interaction_type: InteractionType
+    occurred_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.occurred_at is None:
+            return
+        if self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone offset")
+        object.__setattr__(self, "occurred_at", self.occurred_at.astimezone(UTC))
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,11 +1,11 @@
 {
-  "report_schema_version": "1",
+  "report_schema_version": "2",
   "dataset": {
-    "version": "sha256:04218c16eb8f6aece4ae822ebddce6b2dc16a592752f01867a0d73ad8916270e",
+    "version": "sha256:0d7428a8bcbe2ab35058c4b1efa1972dc7964f1552a77dac3dac9dc6feb797f7",
     "interaction_count": 14
   },
   "evaluation": {
-    "split_version": "leave-one-out-lexicographic-v1",
+    "split_version": "leave-latest-item-out-v1",
     "k": 5
   },
   "results": [

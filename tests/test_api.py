@@ -39,7 +39,9 @@ def test_ready_reports_active_storage_backend(monkeypatch) -> None:
 def _metric_value(payload: str, name: str, labels: dict[str, str]) -> float:
     for family in text_string_to_metric_families(payload):
         for sample in family.samples:
-            if sample.name == name and all(sample.labels.get(key) == value for key, value in labels.items()):
+            if sample.name == name and all(
+                sample.labels.get(key) == value for key, value in labels.items()
+            ):
                 return sample.value
     return 0.0
 
@@ -81,8 +83,14 @@ def test_metrics_report_live_then_cached_ranking(monkeypatch) -> None:
     assert client.get("/recommendations/target-observed").status_code == 200
 
     metrics = client.get("/metrics").text
-    assert _metric_value(metrics, "recommendation_ranking_requests_total", live_labels) == live_before + 1
-    assert _metric_value(metrics, "recommendation_ranking_requests_total", cache_labels) == cache_before + 1
+    assert (
+        _metric_value(metrics, "recommendation_ranking_requests_total", live_labels)
+        == live_before + 1
+    )
+    assert (
+        _metric_value(metrics, "recommendation_ranking_requests_total", cache_labels)
+        == cache_before + 1
+    )
 
 
 def test_ready_returns_503_when_repository_is_unavailable(monkeypatch) -> None:
@@ -169,7 +177,12 @@ def test_interaction_idempotency_replays_without_duplicate(monkeypatch) -> None:
     repository = InMemoryInteractionRepository()
     monkeypatch.setattr(main, "interaction_repository", repository)
     client = TestClient(main.app)
-    payload = {"user_id": "u1", "item_id": "item-a", "interaction_type": "click"}
+    payload = {
+        "user_id": "u1",
+        "item_id": "item-a",
+        "interaction_type": "click",
+        "occurred_at": "2026-10-04T18:00:00-05:00",
+    }
     headers = {"Idempotency-Key": "client-event-123"}
 
     first = client.post("/interactions", json=payload, headers=headers)
@@ -178,9 +191,27 @@ def test_interaction_idempotency_replays_without_duplicate(monkeypatch) -> None:
     assert first.status_code == 201
     assert first.json()["status"] == "recorded"
     assert first.json()["idempotency_key"] == "client-event-123"
+    assert first.json()["occurred_at"] == "2026-10-04T23:00:00Z"
     assert replay.status_code == 200
     assert replay.json()["status"] == "replayed"
-    assert repository.list_all() == (Interaction("u1", "item-a", InteractionType.CLICK),)
+    assert repository.list_all()[0].occurred_at.isoformat() == "2026-10-04T23:00:00+00:00"
+
+
+def test_interaction_rejects_timestamp_without_timezone(monkeypatch) -> None:
+    monkeypatch.setattr(main, "interaction_repository", InMemoryInteractionRepository())
+
+    response = TestClient(main.app).post(
+        "/interactions",
+        json={
+            "user_id": "u1",
+            "item_id": "item-a",
+            "interaction_type": "click",
+            "occurred_at": "2026-10-04T18:00:00",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "timezone offset" in response.text
 
 
 def test_interaction_idempotency_rejects_different_payload(monkeypatch) -> None:

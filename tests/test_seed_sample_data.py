@@ -1,3 +1,4 @@
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,11 @@ def new_repository() -> SqlInteractionRepository:
 def test_load_real_fixture_preserves_duplicate_event_signal() -> None:
     events = load_sample_interactions()
     assert len(events) > 2
-    assert events[0] == Interaction("alice", "book-python", InteractionType.PURCHASE)
+    assert events[0].user_id == "alice"
+    assert events[0].item_id == "book-python"
+    assert events[0].interaction_type == InteractionType.PURCHASE
+    assert events[0].occurred_at is not None
+    assert events[0].occurred_at.tzinfo == UTC
     assert sum(e.user_id == "alice" and e.item_id == "course-ml" for e in events) == 2
 
 

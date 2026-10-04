@@ -39,15 +39,17 @@ and use managed backups and credential rotation for hosted environments.
 
 ## Verification and rollback
 
-The smoke test waits for readiness, records isolated interactions, and confirms
-that the personalized ranking endpoint returns the expected candidate. It uses
-unique IDs, so it is safe to repeat against a nonempty test environment.
+The smoke test waits for readiness, records isolated interactions, confirms that
+timezone-normalized event times survive ingestion, and verifies that personalized
+ranking returns the expected candidate. It uses unique IDs, so it is safe to repeat
+against a nonempty test environment.
 
 Build immutable images tagged with the Git commit SHA. Deploy the new image,
 wait for readiness, then run the smoke test against a staging URL. Roll back by
 redeploying the previous image tag. The current schema is created additively by
-SQLAlchemy; introduce a migration tool before making destructive or multi-step
-schema changes.
+SQLAlchemy, including idempotent nullable event-time columns for existing PostgreSQL
+databases; introduce a migration tool before making destructive or multi-step schema
+changes.
 
 ## Known scaling limits
 

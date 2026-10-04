@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC
 from typing import Protocol
 
 from sqlalchemy import (
     Column,
+    DateTime,
     Integer,
     MetaData,
     String,
@@ -78,6 +80,7 @@ interactions_table = Table(
     Column("user_id", String(128), nullable=False, index=True),
     Column("item_id", String(128), nullable=False, index=True),
     Column("interaction_type", String(32), nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=True),
 )
 idempotency_table = Table(
     "interaction_idempotency",
@@ -86,6 +89,7 @@ idempotency_table = Table(
     Column("user_id", String(128), nullable=False),
     Column("item_id", String(128), nullable=False),
     Column("interaction_type", String(32), nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=True),
 )
 
 
@@ -112,6 +116,15 @@ class SqlInteractionRepository:
 
     def create_schema(self) -> None:
         metadata.create_all(self._engine)
+        if self._engine.dialect.name == "postgresql":
+            with self._engine.begin() as connection:
+                for table_name in ("interactions", "interaction_idempotency"):
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {table_name} "
+                            "ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ"
+                        )
+                    )
 
     def add(self, interaction: Interaction, idempotency_key: str | None = None) -> bool:
         try:
@@ -123,6 +136,7 @@ class SqlInteractionRepository:
                             user_id=interaction.user_id,
                             item_id=interaction.item_id,
                             interaction_type=interaction.interaction_type.value,
+                            occurred_at=interaction.occurred_at,
                         )
                     )
                 connection.execute(
@@ -130,6 +144,7 @@ class SqlInteractionRepository:
                         user_id=interaction.user_id,
                         item_id=interaction.item_id,
                         interaction_type=interaction.interaction_type.value,
+                        occurred_at=interaction.occurred_at,
                     )
                 )
             return True
@@ -141,13 +156,22 @@ class SqlInteractionRepository:
             idempotency_table.c.user_id,
             idempotency_table.c.item_id,
             idempotency_table.c.interaction_type,
+            idempotency_table.c.occurred_at,
         ).where(idempotency_table.c.idempotency_key == idempotency_key)
         with self._engine.connect() as connection:
             row = connection.execute(statement).one_or_none()
 
         if row is None:
             raise SQLAlchemyError("Idempotency conflict occurred without a durable record.")
-        existing = Interaction(row.user_id, row.item_id, InteractionType(row.interaction_type))
+        occurred_at = row.occurred_at
+        if occurred_at is not None and occurred_at.tzinfo is None:
+            occurred_at = occurred_at.replace(tzinfo=UTC)
+        existing = Interaction(
+            row.user_id,
+            row.item_id,
+            InteractionType(row.interaction_type),
+            occurred_at,
+        )
         if existing != interaction:
             raise IdempotencyConflictError(idempotency_key)
         return False
@@ -159,6 +183,7 @@ class SqlInteractionRepository:
                 "user_id": interaction.user_id,
                 "item_id": interaction.item_id,
                 "interaction_type": interaction.interaction_type.value,
+                "occurred_at": interaction.occurred_at,
             }
             for interaction in interactions
         ]
@@ -172,6 +197,7 @@ class SqlInteractionRepository:
             interactions_table.c.user_id,
             interactions_table.c.item_id,
             interactions_table.c.interaction_type,
+            interactions_table.c.occurred_at,
         ).order_by(interactions_table.c.id)
 
         with self._engine.connect() as connection:
@@ -182,6 +208,11 @@ class SqlInteractionRepository:
                 user_id=row.user_id,
                 item_id=row.item_id,
                 interaction_type=InteractionType(row.interaction_type),
+                occurred_at=(
+                    row.occurred_at.replace(tzinfo=UTC)
+                    if row.occurred_at is not None and row.occurred_at.tzinfo is None
+                    else row.occurred_at
+                ),
             )
             for row in rows
         )

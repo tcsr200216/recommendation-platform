@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Header, HTTPException, Query, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from redis.exceptions import RedisError
 
 from app.cache import RecommendationCache, build_recommendation_cache
@@ -34,12 +35,23 @@ class InteractionRequest(BaseModel):
     user_id: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
     interaction_type: InteractionType
+    occurred_at: datetime | None = None
+
+    @field_validator("occurred_at")
+    @classmethod
+    def validate_occurred_at(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("occurred_at must include a timezone offset")
+        return value.astimezone(UTC)
 
 
 class InteractionResponse(BaseModel):
     user_id: str
     item_id: str
     interaction_type: InteractionType
+    occurred_at: datetime | None
     idempotency_key: str | None
     status: str
 
@@ -58,9 +70,7 @@ app = FastAPI(
 )
 app.add_middleware(HttpObservabilityMiddleware)
 
-interaction_repository: InteractionRepository = build_interaction_repository(
-    settings.database_url
-)
+interaction_repository: InteractionRepository = build_interaction_repository(settings.database_url)
 recommendation_cache: RecommendationCache = build_recommendation_cache(
     settings.redis_url,
     ttl_seconds=settings.cache_ttl_seconds,
@@ -133,6 +143,7 @@ async def record_interaction(
         user_id=payload.user_id,
         item_id=payload.item_id,
         interaction_type=payload.interaction_type,
+        occurred_at=payload.occurred_at,
     )
     try:
         inserted = interaction_repository.add(interaction, idempotency_key)
@@ -165,6 +176,7 @@ async def record_interaction(
         user_id=interaction.user_id,
         item_id=interaction.item_id,
         interaction_type=interaction.interaction_type,
+        occurred_at=interaction.occurred_at,
         idempotency_key=idempotency_key,
         status=outcome,
     )

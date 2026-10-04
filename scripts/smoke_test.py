@@ -51,14 +51,31 @@ def main() -> None:
     candidate = f"smoke-candidate-{run_id}"
 
     events = [
-        {"user_id": target, "item_id": shared, "interaction_type": "like"},
-        {"user_id": neighbor, "item_id": shared, "interaction_type": "like"},
-        {"user_id": neighbor, "item_id": candidate, "interaction_type": "purchase"},
+        {
+            "user_id": target,
+            "item_id": shared,
+            "interaction_type": "like",
+            "occurred_at": "2026-10-04T18:00:00Z",
+        },
+        {
+            "user_id": neighbor,
+            "item_id": shared,
+            "interaction_type": "like",
+            "occurred_at": "2026-10-04T18:01:00Z",
+        },
+        {
+            "user_id": neighbor,
+            "item_id": candidate,
+            "interaction_type": "purchase",
+            "occurred_at": "2026-10-04T18:02:00Z",
+        },
     ]
     for event in events:
         status, payload = request(args.base_url, "/interactions", payload=event)
         if status != 201 or payload.get("status") != "recorded":
             raise RuntimeError(f"interaction write failed: status={status}, payload={payload}")
+        if not payload.get("occurred_at", "").endswith("Z"):
+            raise RuntimeError(f"interaction timestamp was not normalized: {payload}")
 
     status, recommendations = request(
         args.base_url,

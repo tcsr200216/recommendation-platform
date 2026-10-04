@@ -44,6 +44,12 @@ append-only event behavior. SQL deployments store idempotency records durably an
 atomically with the interaction. See
 [ADR-009](docs/architecture/ADR-009-idempotent-interaction-ingestion.md).
 
+Interactions may include an ISO-8601 `occurred_at` with an explicit timezone.
+The API normalizes accepted timestamps to UTC and treats event time as part of the
+idempotent payload. Omitting it remains supported for legacy and simple clients, but
+events without timestamps are excluded from temporal evaluation rather than assigned
+invented ordering.
+
 ## Run the complete stack
 
 ```bash
@@ -83,19 +89,21 @@ python -m app.evaluation data/sample_interactions.json --k 5 \
 python -m pytest
 ```
 
-The CLI compares both strategies on the same deterministic leave-one-out split.
-It removes every event for the lexicographically last distinct item of each
-user with at least two distinct items. The remaining events train the models.
-No live database or cache is read or modified. This is an item-based split,
-not a chronological split: the current interaction schema has no timestamps.
+The CLI compares both strategies on the same deterministic temporal leave-one-out
+split. For each user with at least two distinct items and complete timestamps, it
+holds out every event for that user's latest item; item ID breaks exact timestamp
+ties. The remaining earlier-item events train the models. Users with missing event
+times remain in training but are excluded from the evaluation denominator. No live
+database or cache is read or modified.
 
 HitRate@K is the fraction of evaluated users whose held-out item appears in the
 top K. MRR@K averages its reciprocal rank (zero for a miss). Sparse users remain
 in training but are excluded from the metric denominator and counted explicitly.
 Targets absent from the training catalog count as misses and are reported as
 `cold_target_users`. With no eligible users, metrics are JSON null.
-Reports include a schema version, canonical SHA-256 dataset version, interaction
-count, split version, K, strategy, algorithm version, and user counts. The data
+Reports include a schema version, canonical SHA-256 dataset version (including UTC
+event timestamps), interaction count, split version, K, strategy, algorithm version,
+and user counts. The data
 fingerprint is independent of JSON row order while preserving duplicate-event
 counts, so equivalent exports have the same identity without hiding repeated
 behavior. CI regenerates and compares the checked
@@ -108,6 +116,8 @@ evidence of production quality or business impact. See
 [ADR-004](docs/architecture/ADR-004-offline-evaluation.md) for tradeoffs.
 The versioned artifact decision is documented in
 [ADR-010](docs/architecture/ADR-010-versioned-evaluation-artifacts.md).
+The event-time and temporal-split decision is documented in
+[ADR-012](docs/architecture/ADR-012-event-time-temporal-evaluation.md).
 
 ## Continuous integration
 
