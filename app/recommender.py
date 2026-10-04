@@ -27,6 +27,7 @@ INTERACTION_WEIGHTS: dict[InteractionType, float] = {
     InteractionType.LIKE: 3.0,
     InteractionType.PURCHASE: 5.0,
 }
+INTERACTION_HALF_LIFE_DAYS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,13 +53,29 @@ class Recommendation:
     supporting_item_count: int = 0
 
 
-class PopularityRecommender:
-    """Simple weighted-popularity baseline for cold-start recommendations."""
+def _reference_time(interactions: tuple[Interaction, ...]) -> datetime | None:
+    timestamps = [event.occurred_at for event in interactions if event.occurred_at is not None]
+    return max(timestamps) if timestamps else None
 
-    model_version = "weighted-popularity-v2"
+
+def _temporal_strength(interaction: Interaction, reference_time: datetime | None) -> float:
+    """Apply deterministic exponential decay while preserving legacy undated events."""
+    strength = INTERACTION_WEIGHTS[interaction.interaction_type]
+    if interaction.occurred_at is None or reference_time is None:
+        return strength
+    age_seconds = max(0.0, (reference_time - interaction.occurred_at).total_seconds())
+    half_life_seconds = INTERACTION_HALF_LIFE_DAYS * 24 * 60 * 60
+    return strength * math.pow(0.5, age_seconds / half_life_seconds)
+
+
+class PopularityRecommender:
+    """Time-decayed weighted-popularity baseline for cold-start recommendations."""
+
+    model_version = "time-decayed-popularity-v3-30d"
 
     def __init__(self, interactions: Iterable[Interaction]) -> None:
         self._interactions = tuple(interactions)
+        self._reference_time = _reference_time(self._interactions)
 
     def recommend(self, user_id: str, limit: int = 10) -> list[Recommendation]:
         if limit <= 0:
@@ -72,7 +89,9 @@ class PopularityRecommender:
 
         scores: dict[str, float] = defaultdict(float)
         for interaction in self._interactions:
-            scores[interaction.item_id] += INTERACTION_WEIGHTS[interaction.interaction_type]
+            scores[interaction.item_id] += _temporal_strength(
+                interaction, self._reference_time
+            )
 
         ranked = (
             Recommendation(
@@ -93,22 +112,23 @@ class PopularityRecommender:
 class PersonalizedRecommender:
     """User-based collaborative ranking over implicit interaction strengths.
 
-    Each (user, item) is assigned its strongest observed interaction weight,
+    Each (user, item) is assigned its strongest time-decayed interaction weight,
     preventing repeated events from artificially inflating a profile. Positive
     cosine-similarity neighbors vote for items the target user has not seen.
     If no personalized candidates exist, the original popularity baseline is
     used unchanged for cold-start and sparse-overlap scenarios.
     """
 
-    model_version = "user-cosine-v2"
+    model_version = "time-decayed-user-cosine-v3-30d"
 
     def __init__(self, interactions: Iterable[Interaction]) -> None:
         self._interactions = tuple(interactions)
         self._fallback = PopularityRecommender(self._interactions)
+        self._reference_time = _reference_time(self._interactions)
         profiles: dict[str, dict[str, float]] = defaultdict(dict)
 
         for interaction in self._interactions:
-            weight = INTERACTION_WEIGHTS[interaction.interaction_type]
+            weight = _temporal_strength(interaction, self._reference_time)
             profile = profiles[interaction.user_id]
             profile[interaction.item_id] = max(profile.get(interaction.item_id, 0.0), weight)
 

@@ -1,6 +1,6 @@
 # Production Recommendation Platform
 
-FastAPI service with weighted popularity, user cosine similarity, interaction
+FastAPI service with time-decayed weighted popularity, user cosine similarity, interaction
 storage (memory or SQL), and versioned recommendation caching (memory or Redis).
 
 Cache entries include the selected ranker's explicit `model_version`. Changing
@@ -49,6 +49,16 @@ The API normalizes accepted timestamps to UTC and treats event time as part of t
 idempotent payload. Omitting it remains supported for legacy and simple clients, but
 events without timestamps are excluded from temporal evaluation rather than assigned
 invented ordering.
+
+Both ranking strategies also use event time as a live relevance signal. Timestamped
+interaction strength decays exponentially with a fixed 30-day half-life relative to
+the newest event in the repository snapshot. Recent behavior can therefore outrank
+older behavior without a nondeterministic wall-clock dependency. The personalized
+model applies decay before profile deduplication and cosine similarity; the popularity
+baseline applies it before aggregating item scores. Legacy undated interactions retain
+their original weights rather than receiving fabricated timestamps. Model versions
+include the decay policy, so older cached rankings cannot cross this behavior change.
+See [ADR-013](docs/architecture/ADR-013-time-decayed-ranking.md).
 
 ## Run the complete stack
 
@@ -118,6 +128,9 @@ The versioned artifact decision is documented in
 [ADR-010](docs/architecture/ADR-010-versioned-evaluation-artifacts.md).
 The event-time and temporal-split decision is documented in
 [ADR-012](docs/architecture/ADR-012-event-time-temporal-evaluation.md).
+Temporal decay is part of both evaluated model versions; the sample metrics happen to
+remain unchanged on this small fixture and do not establish that decay improves ranking
+quality. Production tuning would require representative logged data and online tests.
 
 ## Continuous integration
 

@@ -11,7 +11,7 @@
   "results": [
     {
       "strategy": "popular",
-      "model_version": "weighted-popularity-v2",
+      "model_version": "time-decayed-popularity-v3-30d",
       "k": 5,
       "total_users": 6,
       "evaluated_users": 5,
@@ -22,7 +22,7 @@
     },
     {
       "strategy": "personalized",
-      "model_version": "user-cosine-v2",
+      "model_version": "time-decayed-user-cosine-v3-30d",
       "k": 5,
       "total_users": 6,
       "evaluated_users": 5,

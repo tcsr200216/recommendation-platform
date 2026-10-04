@@ -71,7 +71,7 @@ def test_metrics_report_live_then_cached_ranking(monkeypatch) -> None:
 
     live_labels = {
         "strategy": "personalized",
-        "model_version": "user-cosine-v2",
+        "model_version": "time-decayed-user-cosine-v3-30d",
         "source": "live",
     }
     cache_labels = {**live_labels, "source": "cache"}

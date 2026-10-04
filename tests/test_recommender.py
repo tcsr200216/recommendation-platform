@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from app.recommender import (
@@ -167,3 +169,64 @@ def test_personalized_non_positive_limit_returns_empty(limit: int) -> None:
     interactions = [Interaction("other", "item", InteractionType.VIEW)]
 
     assert PersonalizedRecommender(interactions).recommend("new-user", limit) == []
+
+
+def test_recent_click_can_outrank_stale_purchase() -> None:
+    interactions = [
+        Interaction(
+            "old-user",
+            "stale-purchase",
+            InteractionType.PURCHASE,
+            datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+        Interaction(
+            "recent-user",
+            "recent-click",
+            InteractionType.CLICK,
+            datetime(2026, 4, 1, tzinfo=UTC),
+        ),
+    ]
+
+    recommendations = PopularityRecommender(interactions).recommend("new-user")
+
+    assert [item.item_id for item in recommendations] == [
+        "recent-click",
+        "stale-purchase",
+    ]
+    assert recommendations[0].score > recommendations[1].score
+
+
+def test_personalized_candidates_use_temporally_decayed_strength() -> None:
+    interactions = [
+        Interaction(
+            "target", "shared", InteractionType.LIKE, datetime(2026, 4, 1, tzinfo=UTC)
+        ),
+        Interaction(
+            "neighbor", "shared", InteractionType.LIKE, datetime(2026, 4, 1, tzinfo=UTC)
+        ),
+        Interaction(
+            "neighbor", "stale", InteractionType.PURCHASE, datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+        Interaction(
+            "neighbor", "recent", InteractionType.CLICK, datetime(2026, 4, 1, tzinfo=UTC)
+        ),
+    ]
+
+    recommendations = PersonalizedRecommender(interactions).recommend("target")
+
+    assert [item.item_id for item in recommendations] == ["recent", "stale"]
+    assert recommendations[0].score > recommendations[1].score
+
+
+def test_undated_legacy_interactions_keep_original_weighting() -> None:
+    interactions = [
+        Interaction("one", "purchase", InteractionType.PURCHASE),
+        Interaction("two", "click", InteractionType.CLICK),
+    ]
+
+    recommendations = PopularityRecommender(interactions).recommend("new-user")
+
+    assert [(item.item_id, item.score) for item in recommendations] == [
+        ("purchase", 5.0),
+        ("click", 2.0),
+    ]
