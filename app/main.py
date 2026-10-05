@@ -38,6 +38,11 @@ from app.repository import (
     InteractionRepository,
     build_interaction_repository,
 )
+from app.reranking import (
+    CATEGORY_DIVERSITY_VERSION,
+    diversify_by_category,
+    diversity_candidate_limit,
+)
 
 
 class InteractionRequest(BaseModel):
@@ -327,8 +332,9 @@ async def get_recommendations(
     user_id: str,
     limit: int = Query(default=10, ge=1, le=100),
     strategy: Literal["personalized", "popular"] = Query(default="personalized"),
+    diversity: Literal["none", "category"] = Query(default="none"),
 ) -> list[RecommendationResponse]:
-    """Use versioned cache-aside ranking, with a live fallback on cache read failure."""
+    """Use versioned cache-aside ranking with optional category coverage."""
     try:
         catalog_items = item_catalog.list_all()
     except SQLAlchemyError as exc:
@@ -346,6 +352,8 @@ async def get_recommendations(
         PersonalizedRecommender if strategy == "personalized" else PopularityRecommender
     )
     model_version = recommender_type.model_version
+    if diversity == "category":
+        model_version = f"{model_version}-{CATEGORY_DIVERSITY_VERSION}"
     try:
         cache_lookup = recommendation_cache.lookup(user_id, strategy, model_version, limit)
     except RedisError:
@@ -389,7 +397,14 @@ async def get_recommendations(
         )
 
     recommender = recommender_type(interactions, eligible_item_ids)
-    recommendations = recommender.recommend(user_id=user_id, limit=limit)
+    candidate_limit = diversity_candidate_limit(limit) if diversity == "category" else limit
+    recommendations = recommender.recommend(user_id=user_id, limit=candidate_limit)
+    if diversity == "category":
+        recommendations = diversify_by_category(
+            recommendations,
+            {item.item_id: item.category for item in catalog_items},
+            limit,
+        )
 
     if cache_generation is not None:
         try:
@@ -459,4 +474,5 @@ def _record_impressions(
             detail="Recommendations could not be durably logged.",
         ) from exc
     response.headers["X-Recommendation-Request-ID"] = request_id
+    response.headers["X-Recommendation-Model-Version"] = model_version
     IMPRESSIONS_RECORDED.labels(strategy, source).inc(len(impressions))

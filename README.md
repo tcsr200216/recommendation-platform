@@ -35,6 +35,19 @@ can include that ID as `recommendation_request_id`; the API accepts attribution 
 when the same request actually exposed that item to that user. This closes the basic
 serve-to-feedback loop without trusting client-supplied attribution. See
 [ADR-015](docs/architecture/ADR-015-durable-impression-attribution.md).
+Add `diversity=category` to cover each available catalog category once before filling
+the remaining positions by relevance. The service reranks a bounded 5x candidate pool
+(up to 500 items), gives this policy a separate cache/model version, records the final
+served order in the impression ledger, and exposes that version in
+`X-Recommendation-Model-Version`. For example:
+
+```bash
+curl -i 'http://127.0.0.1:8000/recommendations/alice?strategy=personalized&limit=5&diversity=category'
+```
+
+This deterministic post-ranker improves category coverage without changing the base
+collaborative or popularity scores. See
+[ADR-016](docs/architecture/ADR-016-category-diversity-reranking.md).
 Create or update catalog records with `PUT /items/{item_id}`. When the catalog is
 populated, both rankers exclude unknown and inactive items before sorting and limiting,
 and responses include current item title and category. With an empty catalog, legacy

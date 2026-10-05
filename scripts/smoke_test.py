@@ -64,6 +64,8 @@ def main() -> None:
     neighbor = f"smoke-neighbor-{run_id}"
     shared = f"smoke-shared-{run_id}"
     candidate = f"smoke-candidate-{run_id}"
+    same_category = f"smoke-same-category-{run_id}"
+    diverse_category = f"smoke-diverse-category-{run_id}"
     retired = f"smoke-retired-{run_id}"
 
     catalog = {
@@ -71,6 +73,16 @@ def main() -> None:
         candidate: {
             "title": "Smoke Active Candidate",
             "category": "verification",
+            "is_active": True,
+        },
+        same_category: {
+            "title": "Smoke Same Category Candidate",
+            "category": "verification",
+            "is_active": True,
+        },
+        diverse_category: {
+            "title": "Smoke Diverse Candidate",
+            "category": "discovery",
             "is_active": True,
         },
         retired: {
@@ -103,7 +115,7 @@ def main() -> None:
         {
             "user_id": neighbor,
             "item_id": candidate,
-            "interaction_type": "click",
+            "interaction_type": "purchase",
             "occurred_at": "2026-10-04T18:02:00Z",
         },
         {
@@ -111,6 +123,18 @@ def main() -> None:
             "item_id": retired,
             "interaction_type": "purchase",
             "occurred_at": "2026-10-04T18:03:00Z",
+        },
+        {
+            "user_id": neighbor,
+            "item_id": same_category,
+            "interaction_type": "click",
+            "occurred_at": "2026-10-04T18:04:00Z",
+        },
+        {
+            "user_id": neighbor,
+            "item_id": diverse_category,
+            "interaction_type": "like",
+            "occurred_at": "2026-10-04T18:05:00Z",
         },
     ]
     for event in events:
@@ -136,6 +160,15 @@ def main() -> None:
         raise RuntimeError(f"inactive item was recommended: {recommendations}")
     if recommendations[0]["supporting_item_count"] != 1:
         raise RuntimeError(f"unexpected supporting evidence: {recommendations[0]}")
+    status, diversified, _ = request_recommendations(
+        args.base_url,
+        f"/recommendations/{target}?strategy=personalized&limit=2&diversity=category",
+    )
+    if status != 200 or [item["category"] for item in diversified] != [
+        "verification",
+        "discovery",
+    ]:
+        raise RuntimeError(f"category diversity failed: status={status}, payload={diversified}")
     status, feedback = request(
         args.base_url,
         "/interactions",
@@ -150,7 +183,8 @@ def main() -> None:
         raise RuntimeError(f"recommendation attribution failed: status={status}, payload={feedback}")
     print(
         "Smoke test passed: catalog eligibility, interaction writes, cache invalidation, "
-        "metadata-enriched ranking, and durable impression attribution work."
+        "metadata-enriched and category-diverse ranking, and durable impression "
+        "attribution work."
     )
 
 

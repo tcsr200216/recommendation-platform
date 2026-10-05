@@ -187,6 +187,58 @@ def test_catalog_metadata_enriches_and_filters_recommendations(monkeypatch) -> N
     assert all(item["item_id"] != "retired" for item in response.json())
 
 
+def test_category_diversity_uses_separate_cache_version_and_logs_served_order(
+    monkeypatch,
+) -> None:
+    repository = InMemoryInteractionRepository()
+    for interaction in [
+        Interaction("u1", "sports-1", InteractionType.PURCHASE),
+        Interaction("u2", "sports-1", InteractionType.PURCHASE),
+        Interaction("u1", "sports-2", InteractionType.PURCHASE),
+        Interaction("u2", "sports-2", InteractionType.LIKE),
+        Interaction("u1", "news-1", InteractionType.PURCHASE),
+        Interaction("u2", "news-1", InteractionType.CLICK),
+        Interaction("u1", "music-1", InteractionType.PURCHASE),
+    ]:
+        repository.add(interaction)
+    catalog = InMemoryItemCatalog()
+    catalog.add_many(
+        (
+            Item("sports-1", "Sports one", "sports"),
+            Item("sports-2", "Sports two", "sports"),
+            Item("news-1", "News one", "news"),
+            Item("music-1", "Music one", "music"),
+        )
+    )
+    impressions = InMemoryImpressionRepository()
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    monkeypatch.setattr(main, "item_catalog", catalog)
+    monkeypatch.setattr(main, "impression_repository", impressions)
+    client = TestClient(main.app)
+
+    relevance = client.get("/recommendations/new-user?strategy=popular&limit=3")
+    diversified = client.get(
+        "/recommendations/new-user?strategy=popular&limit=3&diversity=category"
+    )
+
+    assert [item["item_id"] for item in relevance.json()] == [
+        "sports-1",
+        "sports-2",
+        "news-1",
+    ]
+    assert [item["item_id"] for item in diversified.json()] == [
+        "sports-1",
+        "news-1",
+        "music-1",
+    ]
+    model_version = diversified.headers["X-Recommendation-Model-Version"]
+    assert model_version.endswith("category-coverage-v1-pool5x")
+    request_id = diversified.headers["X-Recommendation-Request-ID"]
+    logged = impressions.list_by_request(request_id)
+    assert [item.item_id for item in logged] == ["sports-1", "news-1", "music-1"]
+    assert all(item.model_version == model_version for item in logged)
+
+
 def test_recommendations_record_ranked_impressions_and_attribute_feedback(
     monkeypatch,
 ) -> None:
