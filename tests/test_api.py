@@ -5,6 +5,7 @@ from prometheus_client.parser import text_string_to_metric_families
 from app import main
 from app.cache import InMemoryRecommendationCache
 from app.catalog import InMemoryItemCatalog, Item
+from app.impressions import InMemoryImpressionRepository
 from app.recommender import Interaction, InteractionType, Recommendation
 from app.repository import InMemoryInteractionRepository
 
@@ -13,6 +14,7 @@ from app.repository import InMemoryInteractionRepository
 def isolated_cache(monkeypatch) -> None:
     monkeypatch.setattr(main, "recommendation_cache", InMemoryRecommendationCache())
     monkeypatch.setattr(main, "item_catalog", InMemoryItemCatalog())
+    monkeypatch.setattr(main, "impression_repository", InMemoryImpressionRepository())
 
 
 class UnavailableRepository(InMemoryInteractionRepository):
@@ -34,6 +36,11 @@ class UnavailableCatalog(InMemoryItemCatalog):
         return False
 
 
+class UnavailableImpressionRepository(InMemoryImpressionRepository):
+    def is_ready(self) -> bool:
+        return False
+
+
 def test_ready_reports_active_storage_backend(monkeypatch) -> None:
     monkeypatch.setattr(main, "interaction_repository", InMemoryInteractionRepository())
 
@@ -45,6 +52,7 @@ def test_ready_reports_active_storage_backend(monkeypatch) -> None:
         "storage": "memory",
         "catalog": "memory",
         "cache": "memory",
+        "impressions": "memory",
     }
 
 
@@ -134,6 +142,16 @@ def test_ready_returns_503_when_catalog_is_unavailable(monkeypatch) -> None:
     assert response.json()["detail"] == "Item catalog is unavailable."
 
 
+def test_ready_returns_503_when_impression_repository_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(main, "interaction_repository", InMemoryInteractionRepository())
+    monkeypatch.setattr(main, "impression_repository", UnavailableImpressionRepository())
+
+    response = TestClient(main.app).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Impression repository is unavailable."
+
+
 def test_catalog_metadata_enriches_and_filters_recommendations(monkeypatch) -> None:
     repository = InMemoryInteractionRepository()
     for interaction in [
@@ -167,6 +185,66 @@ def test_catalog_metadata_enriches_and_filters_recommendations(monkeypatch) -> N
         "supporting_item_count": 1,
     }
     assert all(item["item_id"] != "retired" for item in response.json())
+
+
+def test_recommendations_record_ranked_impressions_and_attribute_feedback(
+    monkeypatch,
+) -> None:
+    repository = InMemoryInteractionRepository()
+    repository.add(Interaction("other", "candidate", InteractionType.PURCHASE))
+    impressions = InMemoryImpressionRepository()
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    monkeypatch.setattr(main, "impression_repository", impressions)
+    client = TestClient(main.app)
+
+    recommendation_response = client.get("/recommendations/new-user")
+
+    assert recommendation_response.status_code == 200
+    request_id = recommendation_response.headers["X-Recommendation-Request-ID"]
+    logged = impressions.list_by_request(request_id)
+    assert len(logged) == 1
+    assert logged[0].user_id == "new-user"
+    assert logged[0].item_id == "candidate"
+    assert logged[0].rank == 1
+    assert logged[0].strategy == "personalized"
+    assert logged[0].source == "live"
+
+    feedback = client.post(
+        "/interactions",
+        headers={"Idempotency-Key": "attributed-click-1"},
+        json={
+            "user_id": "new-user",
+            "item_id": "candidate",
+            "interaction_type": "click",
+            "recommendation_request_id": request_id,
+        },
+    )
+
+    assert feedback.status_code == 201
+    assert feedback.json()["recommendation_request_id"] == request_id
+    assert repository.list_all()[-1].recommendation_request_id == request_id
+
+
+def test_interaction_rejects_attribution_to_an_unexposed_item(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    repository.add(Interaction("other", "candidate", InteractionType.PURCHASE))
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    client = TestClient(main.app)
+    recommendation_response = client.get("/recommendations/new-user")
+    request_id = recommendation_response.headers["X-Recommendation-Request-ID"]
+
+    response = client.post(
+        "/interactions",
+        json={
+            "user_id": "new-user",
+            "item_id": "not-shown",
+            "interaction_type": "click",
+            "recommendation_request_id": request_id,
+        },
+    )
+
+    assert response.status_code == 422
+    assert repository.list_all() == (Interaction("other", "candidate", InteractionType.PURCHASE),)
 
 
 def test_item_upsert_invalidates_rankings_and_can_deactivate_candidate(monkeypatch) -> None:

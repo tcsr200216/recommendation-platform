@@ -28,6 +28,13 @@ uvicorn app.main:app --reload
 
 Open `/docs` for the interactive API. Record events with `POST /interactions`,
 then call `GET /recommendations/{user_id}?strategy=personalized&limit=10`.
+Every successful ranking response includes an `X-Recommendation-Request-ID`. The
+service atomically records one durable impression per returned item with its rank,
+strategy, model version, cache/live source, and serving time. A subsequent interaction
+can include that ID as `recommendation_request_id`; the API accepts attribution only
+when the same request actually exposed that item to that user. This closes the basic
+serve-to-feedback loop without trusting client-supplied attribution. See
+[ADR-015](docs/architecture/ADR-015-durable-impression-attribution.md).
 Create or update catalog records with `PUT /items/{item_id}`. When the catalog is
 populated, both rankers exclude unknown and inactive items before sorting and limiting,
 and responses include current item title and category. With an empty catalog, legacy
@@ -41,8 +48,8 @@ Collaborative results include a supporting-overlap count, never target-history
 item IDs or neighbor user IDs. This makes fallback and evidence strength visible
 without turning the endpoint into a profile-disclosure path. See
 [ADR-011](docs/architecture/ADR-011-privacy-safe-recommendation-explanations.md).
-`/health` checks liveness; `/ready` checks interaction storage, catalog, and cache
-dependencies.
+`/health` checks liveness; `/ready` checks interaction storage, impression storage,
+catalog, and cache dependencies.
 `/metrics` exposes Prometheus-compatible request, latency, cache, and ranking
 metrics. Every HTTP response includes a generated `X-Request-ID`, and completion
 logs carry the same ID as structured JSON for correlation. Health, readiness,
@@ -82,7 +89,8 @@ python scripts/smoke_test.py
 ```
 
 This starts the non-root API container with PostgreSQL and Redis, waits for all
-health checks, and verifies the end-to-end REST flow. The API binds to
+health checks, and verifies the end-to-end catalog, ranking, impression, and attributed
+feedback REST flow. The API binds to
 `http://127.0.0.1:8000`. See [the deployment guide](docs/deployment.md) for
 configuration, hosted deployment, verification, rollback, and known limits.
 
@@ -157,6 +165,8 @@ test, captures logs on failure, and removes its volumes afterward.
 Scrape `GET /metrics` with Prometheus or any OpenMetrics-compatible collector.
 The custom metrics use bounded labels only: HTTP route templates rather than raw
 paths, fixed ranking strategies, explicit model versions, and cache outcomes.
+Impression counters use only strategy and cache/live source; request, user, and item
+identifiers are deliberately excluded.
 This keeps user IDs and item IDs out of telemetry and prevents unbounded series.
 See [ADR-008](docs/architecture/ADR-008-request-observability.md) for the design
 and operational tradeoffs.

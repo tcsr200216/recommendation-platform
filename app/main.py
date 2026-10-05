@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Annotated, Literal
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -11,8 +12,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.cache import RecommendationCache, build_recommendation_cache
 from app.catalog import Item, ItemCatalog, build_item_catalog
 from app.config import settings
+from app.impressions import (
+    ImpressionRepository,
+    RecommendationImpression,
+    build_impression_repository,
+)
 from app.observability import (
     CACHE_OPERATIONS,
+    IMPRESSIONS_RECORDED,
     INTERACTION_INGESTIONS,
     RANKING_REQUESTS,
     RANKING_RESULTS,
@@ -38,6 +45,7 @@ class InteractionRequest(BaseModel):
     item_id: str = Field(min_length=1, max_length=128)
     interaction_type: InteractionType
     occurred_at: datetime | None = None
+    recommendation_request_id: UUID | None = None
 
     @field_validator("occurred_at")
     @classmethod
@@ -55,6 +63,7 @@ class InteractionResponse(BaseModel):
     interaction_type: InteractionType
     occurred_at: datetime | None
     idempotency_key: str | None
+    recommendation_request_id: str | None
     status: str
 
 
@@ -96,6 +105,7 @@ app = FastAPI(
 app.add_middleware(HttpObservabilityMiddleware)
 
 interaction_repository: InteractionRepository = build_interaction_repository(settings.database_url)
+impression_repository: ImpressionRepository = build_impression_repository(settings.database_url)
 item_catalog: ItemCatalog = build_item_catalog(settings.database_url)
 recommendation_cache: RecommendationCache = build_recommendation_cache(
     settings.redis_url,
@@ -134,12 +144,18 @@ async def ready() -> dict[str, str]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Item catalog is unavailable.",
         )
+    if not impression_repository.is_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Impression repository is unavailable.",
+        )
 
     return {
         "status": "ready",
         "storage": interaction_repository.backend,
         "catalog": item_catalog.backend,
         "cache": recommendation_cache.backend,
+        "impressions": impression_repository.backend,
     }
 
 
@@ -242,7 +258,27 @@ async def record_interaction(
         item_id=payload.item_id,
         interaction_type=payload.interaction_type,
         occurred_at=payload.occurred_at,
+        recommendation_request_id=(
+            str(payload.recommendation_request_id)
+            if payload.recommendation_request_id is not None
+            else None
+        ),
     )
+    if payload.recommendation_request_id is not None:
+        try:
+            was_exposed = impression_repository.contains(
+                str(payload.recommendation_request_id), payload.user_id, payload.item_id
+            )
+        except SQLAlchemyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Impression repository is unavailable.",
+            ) from exc
+        if not was_exposed:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="recommendation_request_id does not expose this item to this user.",
+            )
     try:
         inserted = interaction_repository.add(interaction, idempotency_key)
     except IdempotencyConflictError as exc:
@@ -276,6 +312,7 @@ async def record_interaction(
         interaction_type=interaction.interaction_type,
         occurred_at=interaction.occurred_at,
         idempotency_key=idempotency_key,
+        recommendation_request_id=interaction.recommendation_request_id,
         status=outcome,
     )
 
@@ -286,6 +323,7 @@ async def record_interaction(
     tags=["recommendations"],
 )
 async def get_recommendations(
+    response: Response,
     user_id: str,
     limit: int = Query(default=10, ge=1, le=100),
     strategy: Literal["personalized", "popular"] = Query(default="personalized"),
@@ -325,7 +363,7 @@ async def get_recommendations(
         CACHE_OPERATIONS.labels("get", "hit").inc()
         RANKING_REQUESTS.labels(strategy, model_version, "cache").inc()
         RANKING_RESULTS.labels(strategy, "cache").inc(len(cached))
-        return [
+        response_payload = [
             RecommendationResponse(
                 item_id=item.item_id,
                 title=(items_by_id[item.item_id].title if item.item_id in items_by_id else None),
@@ -338,6 +376,10 @@ async def get_recommendations(
             )
             for item in cached
         ]
+        _record_impressions(
+            response, user_id, strategy, model_version, "cache", response_payload
+        )
+        return response_payload
 
     interactions = interaction_repository.list_all()
     if not interactions:
@@ -369,7 +411,7 @@ async def get_recommendations(
     RANKING_REQUESTS.labels(strategy, model_version, "live").inc()
     RANKING_RESULTS.labels(strategy, "live").inc(len(recommendations))
 
-    return [
+    response_payload = [
         RecommendationResponse(
             item_id=item.item_id,
             title=(items_by_id[item.item_id].title if item.item_id in items_by_id else None),
@@ -382,3 +424,39 @@ async def get_recommendations(
         )
         for item in recommendations
     ]
+    _record_impressions(response, user_id, strategy, model_version, "live", response_payload)
+    return response_payload
+
+
+def _record_impressions(
+    response: Response,
+    user_id: str,
+    strategy: str,
+    model_version: str,
+    source: str,
+    recommendations: list[RecommendationResponse],
+) -> None:
+    request_id = str(uuid4())
+    served_at = datetime.now(UTC)
+    impressions = tuple(
+        RecommendationImpression(
+            request_id=request_id,
+            user_id=user_id,
+            item_id=item.item_id,
+            rank=rank,
+            strategy=strategy,
+            model_version=model_version,
+            source=source,
+            served_at=served_at,
+        )
+        for rank, item in enumerate(recommendations, start=1)
+    )
+    try:
+        impression_repository.record_batch(impressions)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Recommendations could not be durably logged.",
+        ) from exc
+    response.headers["X-Recommendation-Request-ID"] = request_id
+    IMPRESSIONS_RECORDED.labels(strategy, source).inc(len(impressions))

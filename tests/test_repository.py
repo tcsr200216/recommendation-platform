@@ -88,6 +88,22 @@ def test_sql_repository_round_trips_interactions() -> None:
     assert repository.is_ready() is True
 
 
+def test_sql_repository_round_trips_recommendation_attribution() -> None:
+    repository = SqlInteractionRepository(create_engine("sqlite+pysqlite:///:memory:"))
+    repository.create_schema()
+    interaction = Interaction(
+        "u1",
+        "item-a",
+        InteractionType.CLICK,
+        recommendation_request_id="2b16392a-b129-4f7f-8e3c-bf9a970b8754",
+    )
+
+    repository.add(interaction, "attributed-click")
+
+    assert repository.list_all() == (interaction,)
+    assert repository.add(interaction, "attributed-click") is False
+
+
 def test_sql_repository_atomically_deduplicates_idempotency_key() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     repository = SqlInteractionRepository(engine)

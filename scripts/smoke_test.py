@@ -29,6 +29,15 @@ def request(
         return response.status, json.load(response)
 
 
+def request_recommendations(base_url: str, path: str) -> tuple[int, list[dict], str]:
+    req = urllib.request.Request(f"{base_url.rstrip('/')}{path}")
+    with urllib.request.urlopen(req, timeout=5) as response:
+        request_id = response.headers.get("X-Recommendation-Request-ID")
+        if request_id is None:
+            raise RuntimeError("recommendation response omitted its attribution request ID")
+        return response.status, json.load(response), request_id
+
+
 def wait_until_ready(base_url: str, timeout_seconds: int) -> None:
     deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
@@ -111,7 +120,7 @@ def main() -> None:
         if not payload.get("occurred_at", "").endswith("Z"):
             raise RuntimeError(f"interaction timestamp was not normalized: {payload}")
 
-    status, recommendations = request(
+    status, recommendations, recommendation_request_id = request_recommendations(
         args.base_url,
         f"/recommendations/{target}?strategy=personalized&limit=10",
     )
@@ -127,9 +136,21 @@ def main() -> None:
         raise RuntimeError(f"inactive item was recommended: {recommendations}")
     if recommendations[0]["supporting_item_count"] != 1:
         raise RuntimeError(f"unexpected supporting evidence: {recommendations[0]}")
+    status, feedback = request(
+        args.base_url,
+        "/interactions",
+        payload={
+            "user_id": target,
+            "item_id": candidate,
+            "interaction_type": "click",
+            "recommendation_request_id": recommendation_request_id,
+        },
+    )
+    if status != 201 or feedback.get("recommendation_request_id") != recommendation_request_id:
+        raise RuntimeError(f"recommendation attribution failed: status={status}, payload={feedback}")
     print(
         "Smoke test passed: catalog eligibility, interaction writes, cache invalidation, "
-        "and metadata-enriched ranking work."
+        "metadata-enriched ranking, and durable impression attribution work."
     )
 
 

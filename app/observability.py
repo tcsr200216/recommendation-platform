@@ -41,6 +41,11 @@ INTERACTION_INGESTIONS = Counter(
     "Interaction ingestion attempts by durable outcome.",
     ("outcome",),
 )
+IMPRESSIONS_RECORDED = Counter(
+    "recommendation_impressions_recorded_total",
+    "Recommendation impressions durably recorded by strategy and ranking source.",
+    ("strategy", "source"),
+)
 
 _UNMEASURED_PATHS = frozenset({"/health", "/ready", "/metrics"})
 

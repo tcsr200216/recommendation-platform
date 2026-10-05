@@ -37,6 +37,7 @@ class Interaction:
     item_id: str
     interaction_type: InteractionType
     occurred_at: datetime | None = None
+    recommendation_request_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.occurred_at is None:

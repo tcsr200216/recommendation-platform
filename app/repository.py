@@ -81,6 +81,7 @@ interactions_table = Table(
     Column("item_id", String(128), nullable=False, index=True),
     Column("interaction_type", String(32), nullable=False),
     Column("occurred_at", DateTime(timezone=True), nullable=True),
+    Column("recommendation_request_id", String(36), nullable=True),
 )
 idempotency_table = Table(
     "interaction_idempotency",
@@ -90,6 +91,7 @@ idempotency_table = Table(
     Column("item_id", String(128), nullable=False),
     Column("interaction_type", String(32), nullable=False),
     Column("occurred_at", DateTime(timezone=True), nullable=True),
+    Column("recommendation_request_id", String(36), nullable=True),
 )
 
 
@@ -125,6 +127,12 @@ class SqlInteractionRepository:
                             "ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ"
                         )
                     )
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {table_name} "
+                            "ADD COLUMN IF NOT EXISTS recommendation_request_id VARCHAR(36)"
+                        )
+                    )
 
     def add(self, interaction: Interaction, idempotency_key: str | None = None) -> bool:
         try:
@@ -137,6 +145,7 @@ class SqlInteractionRepository:
                             item_id=interaction.item_id,
                             interaction_type=interaction.interaction_type.value,
                             occurred_at=interaction.occurred_at,
+                            recommendation_request_id=interaction.recommendation_request_id,
                         )
                     )
                 connection.execute(
@@ -145,6 +154,7 @@ class SqlInteractionRepository:
                         item_id=interaction.item_id,
                         interaction_type=interaction.interaction_type.value,
                         occurred_at=interaction.occurred_at,
+                        recommendation_request_id=interaction.recommendation_request_id,
                     )
                 )
             return True
@@ -157,6 +167,7 @@ class SqlInteractionRepository:
             idempotency_table.c.item_id,
             idempotency_table.c.interaction_type,
             idempotency_table.c.occurred_at,
+            idempotency_table.c.recommendation_request_id,
         ).where(idempotency_table.c.idempotency_key == idempotency_key)
         with self._engine.connect() as connection:
             row = connection.execute(statement).one_or_none()
@@ -171,6 +182,7 @@ class SqlInteractionRepository:
             row.item_id,
             InteractionType(row.interaction_type),
             occurred_at,
+            row.recommendation_request_id,
         )
         if existing != interaction:
             raise IdempotencyConflictError(idempotency_key)
@@ -184,6 +196,7 @@ class SqlInteractionRepository:
                 "item_id": interaction.item_id,
                 "interaction_type": interaction.interaction_type.value,
                 "occurred_at": interaction.occurred_at,
+                "recommendation_request_id": interaction.recommendation_request_id,
             }
             for interaction in interactions
         ]
@@ -198,6 +211,7 @@ class SqlInteractionRepository:
             interactions_table.c.item_id,
             interactions_table.c.interaction_type,
             interactions_table.c.occurred_at,
+            interactions_table.c.recommendation_request_id,
         ).order_by(interactions_table.c.id)
 
         with self._engine.connect() as connection:
@@ -213,6 +227,7 @@ class SqlInteractionRepository:
                     if row.occurred_at is not None and row.occurred_at.tzinfo is None
                     else row.occurred_at
                 ),
+                recommendation_request_id=row.recommendation_request_id,
             )
             for row in rows
         )
