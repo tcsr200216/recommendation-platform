@@ -309,10 +309,14 @@ async def get_recommendations(
     )
     model_version = recommender_type.model_version
     try:
-        cached = recommendation_cache.get(user_id, strategy, model_version, limit)
+        cache_lookup = recommendation_cache.lookup(user_id, strategy, model_version, limit)
     except RedisError:
         CACHE_OPERATIONS.labels("get", "error").inc()
         cached = None
+        cache_generation = None
+    else:
+        cached = cache_lookup.recommendations
+        cache_generation = cache_lookup.generation
 
     if cached is None:
         CACHE_OPERATIONS.labels("get", "miss").inc()
@@ -345,12 +349,22 @@ async def get_recommendations(
     recommender = recommender_type(interactions, eligible_item_ids)
     recommendations = recommender.recommend(user_id=user_id, limit=limit)
 
-    try:
-        recommendation_cache.set(user_id, strategy, model_version, limit, recommendations)
-        CACHE_OPERATIONS.labels("set", "success").inc()
-    except RedisError:
-        CACHE_OPERATIONS.labels("set", "error").inc()
-        # Cache is an optimization; ranking is still possible from source data.
+    if cache_generation is not None:
+        try:
+            stored = recommendation_cache.set_if_current(
+                user_id,
+                strategy,
+                model_version,
+                limit,
+                recommendations,
+                cache_generation,
+            )
+            CACHE_OPERATIONS.labels(
+                "set", "success" if stored else "stale_generation"
+            ).inc()
+        except RedisError:
+            CACHE_OPERATIONS.labels("set", "error").inc()
+            # Cache is an optimization; ranking is still possible from source data.
 
     RANKING_REQUESTS.labels(strategy, model_version, "live").inc()
     RANKING_RESULTS.labels(strategy, "live").inc(len(recommendations))

@@ -6,12 +6,19 @@ import math
 import re
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from redis import Redis
 from redis.exceptions import RedisError
 
 from app.recommender import Recommendation, RecommendationReason
+
+
+@dataclass(frozen=True, slots=True)
+class CacheLookup:
+    generation: int
+    recommendations: tuple[Recommendation, ...] | None
 
 
 class RecommendationCache(Protocol):
@@ -26,6 +33,12 @@ class RecommendationCache(Protocol):
     ) -> tuple[Recommendation, ...] | None:
         ...
 
+    def lookup(
+        self, user_id: str, strategy: str, model_version: str, limit: int
+    ) -> CacheLookup:
+        """Read a result and the generation used for that lookup."""
+        ...
+
     def set(
         self,
         user_id: str,
@@ -36,8 +49,20 @@ class RecommendationCache(Protocol):
     ) -> None:
         ...
 
+    def set_if_current(
+        self,
+        user_id: str,
+        strategy: str,
+        model_version: str,
+        limit: int,
+        recommendations: Sequence[Recommendation],
+        expected_generation: int,
+    ) -> bool:
+        """Store only if no invalidation occurred since lookup."""
+        ...
+
     def invalidate(self) -> None:
-        """Invalidate all cached rankings after a new interaction."""
+        """Invalidate all rankings after interaction or catalog changes."""
         ...
 
     def is_ready(self) -> bool:
@@ -45,12 +70,17 @@ class RecommendationCache(Protocol):
 
 
 def _key(
-    namespace: str, user_id: str, strategy: str, model_version: str, limit: int
+    namespace: str,
+    generation: int,
+    user_id: str,
+    strategy: str,
+    model_version: str,
+    limit: int,
 ) -> str:
     _validate_model_version(model_version)
     # Hash the user ID to avoid delimiter ambiguity and exposing raw IDs in Redis keys.
     user_token = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
-    return f"{namespace}:{strategy}:{model_version}:{limit}:{user_token}"
+    return f"{namespace}:g{generation}:{strategy}:{model_version}:{limit}:{user_token}"
 
 
 class InMemoryRecommendationCache:
@@ -66,6 +96,7 @@ class InMemoryRecommendationCache:
         self._ttl_seconds = ttl_seconds
         self._namespace = namespace
         self._clock = clock
+        self._generation = 0
         self._entries: dict[str, tuple[float, tuple[Recommendation, ...]]] = {}
 
     @property
@@ -75,15 +106,27 @@ class InMemoryRecommendationCache:
     def get(
         self, user_id: str, strategy: str, model_version: str, limit: int
     ) -> tuple[Recommendation, ...] | None:
-        key = _key(self._namespace, user_id, strategy, model_version, limit)
+        return self.lookup(user_id, strategy, model_version, limit).recommendations
+
+    def lookup(
+        self, user_id: str, strategy: str, model_version: str, limit: int
+    ) -> CacheLookup:
+        key = _key(
+            self._namespace,
+            self._generation,
+            user_id,
+            strategy,
+            model_version,
+            limit,
+        )
         entry = self._entries.get(key)
         if entry is None:
-            return None
+            return CacheLookup(self._generation, None)
         expires_at, results = entry
         if self._clock() >= expires_at:
             del self._entries[key]
-            return None
-        return results
+            return CacheLookup(self._generation, None)
+        return CacheLookup(self._generation, results)
 
     def set(
         self,
@@ -93,12 +136,43 @@ class InMemoryRecommendationCache:
         limit: int,
         recommendations: Sequence[Recommendation],
     ) -> None:
-        self._entries[_key(self._namespace, user_id, strategy, model_version, limit)] = (
+        self.set_if_current(
+            user_id,
+            strategy,
+            model_version,
+            limit,
+            recommendations,
+            self._generation,
+        )
+
+    def set_if_current(
+        self,
+        user_id: str,
+        strategy: str,
+        model_version: str,
+        limit: int,
+        recommendations: Sequence[Recommendation],
+        expected_generation: int,
+    ) -> bool:
+        if expected_generation != self._generation:
+            return False
+        self._entries[
+            _key(
+                self._namespace,
+                self._generation,
+                user_id,
+                strategy,
+                model_version,
+                limit,
+            )
+        ] = (
             self._clock() + self._ttl_seconds,
             tuple(recommendations),
         )
+        return True
 
     def invalidate(self) -> None:
+        self._generation += 1
         self._entries.clear()
 
     def is_ready(self) -> bool:
@@ -120,7 +194,7 @@ def _validate_model_version(model_version: str) -> None:
 
 
 class RedisRecommendationCache:
-    """Redis cache with JSON validation and bounded SCAN-based invalidation."""
+    """Redis cache with validated JSON and atomic generation invalidation."""
 
     def __init__(
         self,
@@ -132,6 +206,19 @@ class RedisRecommendationCache:
         self._client = client
         self._ttl_seconds = ttl_seconds
         self._namespace = namespace
+        self._generation_key = f"{namespace}:generation"
+
+    def _generation(self) -> int:
+        value = self._client.get(self._generation_key)
+        if value is None:
+            return 0
+        try:
+            generation = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RedisError("Recommendation cache generation is invalid.") from exc
+        if generation < 0:
+            raise RedisError("Recommendation cache generation is invalid.")
+        return generation
 
     @classmethod
     def from_url(
@@ -150,10 +237,23 @@ class RedisRecommendationCache:
     def get(
         self, user_id: str, strategy: str, model_version: str, limit: int
     ) -> tuple[Recommendation, ...] | None:
-        key = _key(self._namespace, user_id, strategy, model_version, limit)
+        return self.lookup(user_id, strategy, model_version, limit).recommendations
+
+    def lookup(
+        self, user_id: str, strategy: str, model_version: str, limit: int
+    ) -> CacheLookup:
+        generation = self._generation()
+        key = _key(
+            self._namespace,
+            generation,
+            user_id,
+            strategy,
+            model_version,
+            limit,
+        )
         payload = self._client.get(key)
         if payload is None:
-            return None
+            return CacheLookup(generation, None)
         try:
             value = json.loads(payload)
             if not isinstance(value, list):
@@ -179,11 +279,11 @@ class RedisRecommendationCache:
                         supporting_item_count=item["supporting_item_count"],
                     )
                 )
-            return tuple(results)
+            return CacheLookup(generation, tuple(results))
         except (ValueError, TypeError, OverflowError):
             # Do not serve invalid or incompatible cached results.
             self._client.delete(key)
-            return None
+            return CacheLookup(generation, None)
 
     def set(
         self,
@@ -193,6 +293,25 @@ class RedisRecommendationCache:
         limit: int,
         recommendations: Sequence[Recommendation],
     ) -> None:
+        generation = self._generation()
+        self.set_if_current(
+            user_id,
+            strategy,
+            model_version,
+            limit,
+            recommendations,
+            generation,
+        )
+
+    def set_if_current(
+        self,
+        user_id: str,
+        strategy: str,
+        model_version: str,
+        limit: int,
+        recommendations: Sequence[Recommendation],
+        expected_generation: int,
+    ) -> bool:
         payload = json.dumps(
             [
                 {
@@ -206,23 +325,35 @@ class RedisRecommendationCache:
             allow_nan=False,
             separators=(",", ":"),
         )
-        self._client.set(
-            _key(self._namespace, user_id, strategy, model_version, limit),
-            payload,
-            ex=self._ttl_seconds,
+        key = _key(
+            self._namespace,
+            expected_generation,
+            user_id,
+            strategy,
+            model_version,
+            limit,
         )
+        stored = self._client.eval(
+            """
+            local current = redis.call('GET', KEYS[1])
+            if not current then current = '0' end
+            if current ~= ARGV[1] then return 0 end
+            redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+            return 1
+            """,
+            2,
+            self._generation_key,
+            key,
+            str(expected_generation),
+            payload,
+            self._ttl_seconds,
+        )
+        return bool(stored)
 
     def invalidate(self) -> None:
-        # A single new event can change both global popularity and other users'
-        # collaborative-neighbor scores; user-only invalidation is unsafe.
-        batch: list[str] = []
-        for key in self._client.scan_iter(match=f"{self._namespace}:*", count=100):
-            batch.append(key)
-            if len(batch) >= 100:
-                self._client.delete(*batch)
-                batch.clear()
-        if batch:
-            self._client.delete(*batch)
+        # A new generation makes every prior key unreachable in one atomic Redis
+        # operation. Old result keys expire naturally under their bounded TTL.
+        self._client.incr(self._generation_key)
 
     def is_ready(self) -> bool:
         try:

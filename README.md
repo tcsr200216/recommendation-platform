@@ -7,7 +7,12 @@ caching (memory or Redis).
 Cache entries include the selected ranker's explicit `model_version`. Changing
 ranking semantics and bumping that version produces a cache miss instead of
 serving scores created by the previous algorithm. The configured cache namespace
-still provides a deployment-wide compatibility boundary. See
+still provides a deployment-wide compatibility boundary. Interaction and catalog
+writes invalidate all rankings by atomically advancing a Redis generation token,
+rather than scanning cached-user keys. Lookups carry their generation through live
+ranking, and a Lua compare-and-set prevents a request that raced an invalidation from
+publishing stale results into the new generation. Old entries expire under their
+normal TTL. See [ADR-003](docs/architecture/ADR-003-recommendation-cache.md) and
 [ADR-007](docs/architecture/ADR-007-model-versioned-cache-keys.md).
 
 ## Run locally

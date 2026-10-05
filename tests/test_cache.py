@@ -1,7 +1,7 @@
-import fnmatch
 import json
 
 import pytest
+from redis.exceptions import RedisError
 
 from app.cache import (
     InMemoryRecommendationCache,
@@ -23,15 +23,24 @@ class FakeRedis:
         self.entries[key] = value
         self.expirations[key] = ex
 
+    def incr(self, key: str) -> int:
+        value = int(self.entries.get(key, "0")) + 1
+        self.entries[key] = str(value)
+        return value
+
+    def eval(self, script: str, number_of_keys: int, *values) -> int:
+        assert number_of_keys == 2
+        generation_key, result_key, expected, payload, ttl = values
+        current = self.entries.get(generation_key, "0")
+        if current != expected:
+            return 0
+        self.set(result_key, payload, ex=int(ttl))
+        return 1
+
     def delete(self, *keys: str) -> None:
         for key in keys:
             self.entries.pop(key, None)
             self.expirations.pop(key, None)
-
-    def scan_iter(self, match: str, count: int):
-        for key in list(self.entries):
-            if fnmatch.fnmatch(key, match):
-                yield key
 
     def ping(self) -> bool:
         return True
@@ -78,7 +87,7 @@ def test_memory_invalidation_clears_all_users_and_strategies() -> None:
     assert cache.get("bob", "personalized", "user-cosine-v1", 10) is None
 
 
-def test_redis_cache_round_trip_ttl_and_namespace_invalidation() -> None:
+def test_redis_cache_round_trip_ttl_and_generation_invalidation() -> None:
     client = FakeRedis()
     cache = RedisRecommendationCache(client, ttl_seconds=60, namespace="recommendations:v2")
     other = RedisRecommendationCache(client, ttl_seconds=60, namespace="other:v1")
@@ -104,6 +113,60 @@ def test_redis_cache_round_trip_ttl_and_namespace_invalidation() -> None:
 
     assert cache.get("alice", "popular", "weighted-popularity-v1", 10) is None
     assert other.get("alice", "popular", "weighted-popularity-v1", 10) == tuple(result)
+    assert client.entries["recommendations:v2:generation"] == "1"
+    assert any(key.startswith("recommendations:v2:g0:") for key in client.entries)
+
+    cache.set("alice", "popular", "weighted-popularity-v1", 10, result)
+    assert any(key.startswith("recommendations:v2:g1:") for key in client.entries)
+    assert cache.get("alice", "popular", "weighted-popularity-v1", 10) == tuple(result)
+
+
+def test_redis_invalidation_is_constant_time_regardless_of_cached_users() -> None:
+    client = FakeRedis()
+    cache = RedisRecommendationCache(client)
+    for index in range(250):
+        cache.set(
+            f"user-{index}",
+            "popular",
+            "weighted-popularity-v1",
+            10,
+            [Recommendation(f"item-{index}", 1.0)],
+        )
+
+    cache.invalidate()
+
+    assert client.entries["recommendations:v1:generation"] == "1"
+    assert cache.get("user-0", "popular", "weighted-popularity-v1", 10) is None
+    assert cache.get("user-249", "popular", "weighted-popularity-v1", 10) is None
+
+
+@pytest.mark.parametrize("value", ["not-an-integer", "-1"])
+def test_redis_rejects_corrupt_generation(value: str) -> None:
+    client = FakeRedis()
+    client.entries["recommendations:v1:generation"] = value
+    cache = RedisRecommendationCache(client)
+
+    with pytest.raises(RedisError, match="generation is invalid"):
+        cache.get("user", "popular", "weighted-popularity-v1", 10)
+
+
+def test_generation_guard_rejects_ranking_computed_before_invalidation() -> None:
+    client = FakeRedis()
+    cache = RedisRecommendationCache(client)
+    lookup = cache.lookup("user", "popular", "weighted-popularity-v1", 10)
+
+    cache.invalidate()
+    stored = cache.set_if_current(
+        "user",
+        "popular",
+        "weighted-popularity-v1",
+        10,
+        [Recommendation("stale", 1.0)],
+        lookup.generation,
+    )
+
+    assert stored is False
+    assert cache.get("user", "popular", "weighted-popularity-v1", 10) is None
 
 
 def test_malformed_redis_payload_is_deleted_and_treated_as_miss() -> None:
@@ -141,7 +204,7 @@ def test_rejects_invalid_ttl(ttl: int) -> None:
         InMemoryRecommendationCache(ttl_seconds=ttl)
 
 
-def test_rejects_scan_glob_metacharacters_in_namespace() -> None:
+def test_rejects_unsafe_namespace_characters() -> None:
     with pytest.raises(ValueError, match="namespace"):
         RedisRecommendationCache(FakeRedis(), namespace="recommendations:*")
 
