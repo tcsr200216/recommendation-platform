@@ -52,6 +52,23 @@ def test_limit_caps_number_of_recommendations() -> None:
     assert [item.item_id for item in recommendations] == ["item-a", "item-b"]
 
 
+def test_catalog_eligibility_filters_both_personalized_and_fallback_candidates() -> None:
+    interactions = [
+        Interaction("target", "shared", InteractionType.LIKE),
+        Interaction("neighbor", "shared", InteractionType.LIKE),
+        Interaction("neighbor", "active", InteractionType.CLICK),
+        Interaction("neighbor", "inactive", InteractionType.PURCHASE),
+    ]
+
+    personalized = PersonalizedRecommender(interactions, {"shared", "active"}).recommend(
+        "target"
+    )
+    fallback = PersonalizedRecommender(interactions, {"active"}).recommend("new-user")
+
+    assert [item.item_id for item in personalized] == ["active"]
+    assert [item.item_id for item in fallback] == ["active"]
+
+
 def test_ties_are_broken_deterministically_by_item_id() -> None:
     interactions = [
         Interaction("u1", "item-b", InteractionType.CLICK),

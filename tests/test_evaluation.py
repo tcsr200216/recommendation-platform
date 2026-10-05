@@ -38,7 +38,7 @@ def test_known_rank_two_metrics_include_sparse_users_only_as_training():
     assert report.evaluated_users == 1
     assert report.skipped_sparse_users == 3
     assert report.total_users == 4
-    assert report.model_version == "time-decayed-popularity-v3-30d"
+    assert report.model_version == "catalog-aware-time-decayed-popularity-v4-30d"
     assert evaluate(events, k=1, strategy="popular").hit_rate_at_k == 0.0
 
 
@@ -54,7 +54,7 @@ def test_personalized_uses_neighbor_signal():
     assert report.hit_rate_at_k == 0.5
     assert report.mrr_at_k == 0.5
     assert report.cold_target_users == 1
-    assert report.model_version == "time-decayed-user-cosine-v3-30d"
+    assert report.model_version == "catalog-aware-time-decayed-user-cosine-v4-30d"
 
 
 def test_unknown_targets_are_misses_and_not_dropped():
@@ -115,8 +115,8 @@ def test_build_report_carries_reproducibility_metadata_and_model_versions():
         "k": 2,
     }
     assert [result["model_version"] for result in report["results"]] == [
-        "time-decayed-popularity-v3-30d",
-        "time-decayed-user-cosine-v3-30d",
+        "catalog-aware-time-decayed-popularity-v4-30d",
+        "catalog-aware-time-decayed-user-cosine-v4-30d",
     ]
 
 

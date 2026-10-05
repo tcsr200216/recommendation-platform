@@ -1,0 +1,8 @@
+[
+  {"item_id":"book-python","title":"Practical Python Patterns","category":"books","is_active":true},
+  {"item_id":"book-sql","title":"SQL for Data Systems","category":"books","is_active":true},
+  {"item_id":"course-data","title":"Modern Data Engineering","category":"courses","is_active":true},
+  {"item_id":"course-ml","title":"Applied Machine Learning","category":"courses","is_active":true},
+  {"item_id":"video-recsys","title":"Recommendation Systems Explained","category":"videos","is_active":true},
+  {"item_id":"video-warehouse","title":"Inside a Cloud Warehouse","category":"videos","is_active":true}
+]

@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import FastAPI, Header, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, Field, field_validator
 from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.cache import RecommendationCache, build_recommendation_cache
+from app.catalog import Item, ItemCatalog, build_item_catalog
 from app.config import settings
 from app.observability import (
     CACHE_OPERATIONS,
@@ -58,9 +60,32 @@ class InteractionResponse(BaseModel):
 
 class RecommendationResponse(BaseModel):
     item_id: str
+    title: str | None
+    category: str | None
     score: float
     reason: RecommendationReason
     supporting_item_count: int
+
+
+class ItemRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=256)
+    category: str = Field(min_length=1, max_length=128)
+    is_active: bool = True
+
+    @field_validator("title", "category")
+    @classmethod
+    def strip_nonempty_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must contain readable text")
+        return value
+
+
+class ItemResponse(BaseModel):
+    item_id: str
+    title: str
+    category: str
+    is_active: bool
 
 
 app = FastAPI(
@@ -71,6 +96,7 @@ app = FastAPI(
 app.add_middleware(HttpObservabilityMiddleware)
 
 interaction_repository: InteractionRepository = build_interaction_repository(settings.database_url)
+item_catalog: ItemCatalog = build_item_catalog(settings.database_url)
 recommendation_cache: RecommendationCache = build_recommendation_cache(
     settings.redis_url,
     ttl_seconds=settings.cache_ttl_seconds,
@@ -103,12 +129,84 @@ async def ready() -> dict[str, str]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Recommendation cache is unavailable.",
         )
+    if not item_catalog.is_ready():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Item catalog is unavailable.",
+        )
 
     return {
         "status": "ready",
         "storage": interaction_repository.backend,
+        "catalog": item_catalog.backend,
         "cache": recommendation_cache.backend,
     }
+
+
+@app.put("/items/{item_id}", response_model=ItemResponse, tags=["catalog"])
+async def upsert_item(
+    payload: ItemRequest,
+    item_id: Annotated[
+        str,
+        Path(
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        ),
+    ],
+) -> ItemResponse:
+    """Create or replace catalog metadata and recommendation eligibility."""
+    item = Item(item_id, payload.title, payload.category, payload.is_active)
+    try:
+        item_catalog.upsert(item)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Item catalog is unavailable.",
+        ) from exc
+    try:
+        recommendation_cache.invalidate()
+        CACHE_OPERATIONS.labels("invalidate", "success").inc()
+    except RedisError as exc:
+        CACHE_OPERATIONS.labels("invalidate", "error").inc()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Item saved, but recommendation cache invalidation failed.",
+        ) from exc
+    return ItemResponse(
+        item_id=item.item_id,
+        title=item.title,
+        category=item.category,
+        is_active=item.is_active,
+    )
+
+
+@app.get("/items/{item_id}", response_model=ItemResponse, tags=["catalog"])
+async def get_item(
+    item_id: Annotated[
+        str,
+        Path(
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        ),
+    ],
+) -> ItemResponse:
+    try:
+        item = item_catalog.get(item_id)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Item catalog is unavailable.",
+        ) from exc
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Item not found.")
+    return ItemResponse(
+        item_id=item.item_id,
+        title=item.title,
+        category=item.category,
+        is_active=item.is_active,
+    )
 
 
 @app.get("/", tags=["system"])
@@ -193,6 +291,19 @@ async def get_recommendations(
     strategy: Literal["personalized", "popular"] = Query(default="personalized"),
 ) -> list[RecommendationResponse]:
     """Use versioned cache-aside ranking, with a live fallback on cache read failure."""
+    try:
+        catalog_items = item_catalog.list_all()
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Item catalog is unavailable.",
+        ) from exc
+    items_by_id = {item.item_id: item for item in catalog_items}
+    eligible_item_ids = (
+        {item.item_id for item in catalog_items if item.is_active}
+        if catalog_items
+        else None
+    )
     recommender_type = (
         PersonalizedRecommender if strategy == "personalized" else PopularityRecommender
     )
@@ -213,6 +324,10 @@ async def get_recommendations(
         return [
             RecommendationResponse(
                 item_id=item.item_id,
+                title=(items_by_id[item.item_id].title if item.item_id in items_by_id else None),
+                category=(
+                    items_by_id[item.item_id].category if item.item_id in items_by_id else None
+                ),
                 score=item.score,
                 reason=item.reason,
                 supporting_item_count=item.supporting_item_count,
@@ -227,7 +342,7 @@ async def get_recommendations(
             detail="No interactions are available yet.",
         )
 
-    recommender = recommender_type(interactions)
+    recommender = recommender_type(interactions, eligible_item_ids)
     recommendations = recommender.recommend(user_id=user_id, limit=limit)
 
     try:
@@ -243,6 +358,10 @@ async def get_recommendations(
     return [
         RecommendationResponse(
             item_id=item.item_id,
+            title=(items_by_id[item.item_id].title if item.item_id in items_by_id else None),
+            category=(
+                items_by_id[item.item_id].category if item.item_id in items_by_id else None
+            ),
             score=item.score,
             reason=item.reason,
             supporting_item_count=item.supporting_item_count,

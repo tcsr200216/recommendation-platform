@@ -10,9 +10,15 @@ import urllib.request
 import uuid
 
 
-def request(base_url: str, path: str, *, payload: dict[str, str] | None = None):
+def request(
+    base_url: str,
+    path: str,
+    *,
+    payload: dict[str, str | bool] | None = None,
+    method: str | None = None,
+):
     body = None if payload is None else json.dumps(payload).encode("utf-8")
-    method = "GET" if payload is None else "POST"
+    method = method or ("GET" if payload is None else "POST")
     req = urllib.request.Request(
         f"{base_url.rstrip('/')}{path}",
         data=body,
@@ -49,6 +55,28 @@ def main() -> None:
     neighbor = f"smoke-neighbor-{run_id}"
     shared = f"smoke-shared-{run_id}"
     candidate = f"smoke-candidate-{run_id}"
+    retired = f"smoke-retired-{run_id}"
+
+    catalog = {
+        shared: {"title": "Smoke Shared Signal", "category": "verification", "is_active": True},
+        candidate: {
+            "title": "Smoke Active Candidate",
+            "category": "verification",
+            "is_active": True,
+        },
+        retired: {
+            "title": "Smoke Retired Candidate",
+            "category": "verification",
+            "is_active": False,
+        },
+    }
+    for item_id, item in catalog.items():
+        status, saved = request(args.base_url, f"/items/{item_id}", payload=item, method="PUT")
+        if status != 200 or saved.get("item_id") != item_id:
+            raise RuntimeError(f"catalog write failed: status={status}, payload={saved}")
+    status, saved = request(args.base_url, f"/items/{candidate}")
+    if status != 200 or saved.get("title") != "Smoke Active Candidate":
+        raise RuntimeError(f"catalog read failed: status={status}, payload={saved}")
 
     events = [
         {
@@ -66,8 +94,14 @@ def main() -> None:
         {
             "user_id": neighbor,
             "item_id": candidate,
-            "interaction_type": "purchase",
+            "interaction_type": "click",
             "occurred_at": "2026-10-04T18:02:00Z",
+        },
+        {
+            "user_id": neighbor,
+            "item_id": retired,
+            "interaction_type": "purchase",
+            "occurred_at": "2026-10-04T18:03:00Z",
         },
     ]
     for event in events:
@@ -87,9 +121,16 @@ def main() -> None:
         )
     if recommendations[0]["reason"] != "similar_users":
         raise RuntimeError(f"unexpected explanation: {recommendations[0]}")
+    if recommendations[0]["title"] != "Smoke Active Candidate":
+        raise RuntimeError(f"catalog metadata was not enriched: {recommendations[0]}")
+    if any(item["item_id"] == retired for item in recommendations):
+        raise RuntimeError(f"inactive item was recommended: {recommendations}")
     if recommendations[0]["supporting_item_count"] != 1:
         raise RuntimeError(f"unexpected supporting evidence: {recommendations[0]}")
-    print("Smoke test passed: readiness, interaction writes, cache invalidation, and ranking work.")
+    print(
+        "Smoke test passed: catalog eligibility, interaction writes, cache invalidation, "
+        "and metadata-enriched ranking work."
+    )
 
 
 if __name__ == "__main__":

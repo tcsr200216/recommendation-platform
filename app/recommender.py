@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Iterable
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -71,11 +72,16 @@ def _temporal_strength(interaction: Interaction, reference_time: datetime | None
 class PopularityRecommender:
     """Time-decayed weighted-popularity baseline for cold-start recommendations."""
 
-    model_version = "time-decayed-popularity-v3-30d"
+    model_version = "catalog-aware-time-decayed-popularity-v4-30d"
 
-    def __init__(self, interactions: Iterable[Interaction]) -> None:
+    def __init__(
+        self,
+        interactions: Iterable[Interaction],
+        eligible_item_ids: AbstractSet[str] | None = None,
+    ) -> None:
         self._interactions = tuple(interactions)
         self._reference_time = _reference_time(self._interactions)
+        self._eligible_item_ids = eligible_item_ids
 
     def recommend(self, user_id: str, limit: int = 10) -> list[Recommendation]:
         if limit <= 0:
@@ -101,6 +107,7 @@ class PopularityRecommender:
             )
             for item_id, score in scores.items()
             if item_id not in seen_items
+            and (self._eligible_item_ids is None or item_id in self._eligible_item_ids)
         )
 
         return sorted(
@@ -119,11 +126,16 @@ class PersonalizedRecommender:
     used unchanged for cold-start and sparse-overlap scenarios.
     """
 
-    model_version = "time-decayed-user-cosine-v3-30d"
+    model_version = "catalog-aware-time-decayed-user-cosine-v4-30d"
 
-    def __init__(self, interactions: Iterable[Interaction]) -> None:
+    def __init__(
+        self,
+        interactions: Iterable[Interaction],
+        eligible_item_ids: AbstractSet[str] | None = None,
+    ) -> None:
         self._interactions = tuple(interactions)
-        self._fallback = PopularityRecommender(self._interactions)
+        self._eligible_item_ids = eligible_item_ids
+        self._fallback = PopularityRecommender(self._interactions, eligible_item_ids)
         self._reference_time = _reference_time(self._interactions)
         profiles: dict[str, dict[str, float]] = defaultdict(dict)
 
@@ -167,7 +179,9 @@ class PersonalizedRecommender:
 
             shared_items = target.keys() & profile.keys()
             for item_id, strength in profile.items():
-                if item_id not in target:
+                if item_id not in target and (
+                    self._eligible_item_ids is None or item_id in self._eligible_item_ids
+                ):
                     scores[item_id] += similarity * strength
                     evidence[item_id].update(shared_items)
 

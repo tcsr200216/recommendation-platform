@@ -2,7 +2,7 @@
 
 ## Local production-like stack
 
-The Compose stack runs the API with PostgreSQL for durable interactions and
+The Compose stack runs the API with PostgreSQL for durable catalog items and interactions and
 Redis for shared recommendation caching. Docker Compose 2.20 or newer is
 recommended because startup uses dependency health checks and `--wait`.
 
@@ -21,7 +21,7 @@ volumes preserve their data across normal restarts. Use `docker compose down
 
 The container listens on port 8000 and runs as the unprivileged UID/GID 10001.
 `GET /health` is the process liveness endpoint. `GET /ready` checks the selected
-interaction repository and recommendation cache. Route traffic only after
+interaction repository, item catalog, and recommendation cache. Route traffic only after
 readiness succeeds, and stop routing before terminating an instance.
 
 For a hosted deployment, provide these environment variables through the
@@ -39,10 +39,11 @@ and use managed backups and credential rotation for hosted environments.
 
 ## Verification and rollback
 
-The smoke test waits for readiness, records isolated interactions, confirms that
-timezone-normalized event times survive ingestion, and verifies that personalized
-ranking returns the expected candidate. It uses unique IDs, so it is safe to repeat
-against a nonempty test environment.
+The smoke test waits for readiness, creates isolated active and inactive catalog
+items, records interactions, confirms that timezone-normalized event times survive
+ingestion, and verifies that personalized ranking enriches the active candidate while
+excluding the inactive one. It uses unique IDs, so it is safe to repeat against a
+nonempty test environment.
 
 Build immutable images tagged with the Git commit SHA. Deploy the new image,
 wait for readiness, then run the smoke test against a staging URL. Roll back by
@@ -53,8 +54,8 @@ changes.
 
 ## Known scaling limits
 
-The service rebuilds recommendation profiles from all interactions on each
-cache miss. A new interaction invalidates the entire cache namespace. Those
+The service rebuilds recommendation profiles from all interactions and reads the full
+catalog on each cache miss. A new interaction or catalog update invalidates the entire cache namespace. Those
 choices are correct for this project stage but will become expensive at higher
 traffic. Move ranking to versioned offline snapshots or incremental workers
 before scaling writes or the interaction corpus substantially.

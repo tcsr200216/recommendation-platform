@@ -1,7 +1,8 @@
 # Production Recommendation Platform
 
-FastAPI service with time-decayed weighted popularity, user cosine similarity, interaction
-storage (memory or SQL), and versioned recommendation caching (memory or Redis).
+FastAPI service with a durable item catalog, time-decayed weighted popularity, user
+cosine similarity, interaction storage (memory or SQL), and versioned recommendation
+caching (memory or Redis).
 
 Cache entries include the selected ranker's explicit `model_version`. Changing
 ranking semantics and bumping that version produces a cache miss instead of
@@ -22,13 +23,21 @@ uvicorn app.main:app --reload
 
 Open `/docs` for the interactive API. Record events with `POST /interactions`,
 then call `GET /recommendations/{user_id}?strategy=personalized&limit=10`.
+Create or update catalog records with `PUT /items/{item_id}`. When the catalog is
+populated, both rankers exclude unknown and inactive items before sorting and limiting,
+and responses include current item title and category. With an empty catalog, legacy
+interaction-only data remains rankable and metadata fields are null. Catalog updates
+invalidate versioned rankings, while enrichment after cache lookup keeps metadata
+fresh. See
+[ADR-014](docs/architecture/ADR-014-durable-catalog-aware-ranking.md).
 Each result explains whether it came from similar-user collaborative evidence,
 the explicit popularity strategy, or a cold/sparse-user popularity fallback.
 Collaborative results include a supporting-overlap count, never target-history
 item IDs or neighbor user IDs. This makes fallback and evidence strength visible
 without turning the endpoint into a profile-disclosure path. See
 [ADR-011](docs/architecture/ADR-011-privacy-safe-recommendation-explanations.md).
-`/health` checks liveness; `/ready` checks storage and cache dependencies.
+`/health` checks liveness; `/ready` checks interaction storage, catalog, and cache
+dependencies.
 `/metrics` exposes Prometheus-compatible request, latency, cache, and ranking
 metrics. Every HTTP response includes a generated `X-Request-ID`, and completion
 logs carry the same ID as structured JSON for correlation. Health, readiness,
@@ -75,7 +84,7 @@ configuration, hosted deployment, verification, rollback, and known limits.
 ## Seed the SQL demo database
 
 After `docker compose up --build --detach --wait`, load the checked-in
-synthetic sample fixture into the **Compose demo database**:
+synthetic item catalog and interaction fixtures into the **Compose demo database**:
 
 ```bash
 docker compose exec -T api python -m scripts.seed_sample_data
@@ -84,10 +93,10 @@ docker compose exec -T api python -m scripts.seed_sample_data
 curl -fsS 'http://127.0.0.1:8000/recommendations/alice?strategy=personalized&limit=5'
 ```
 
-The seeder requires `DATABASE_URL` and refuses to write into a nonempty database
-unless its complete interaction sequence already matches the fixture. This avoids
-silently mixing demo interactions into an existing corpus. Use it only on an
-isolated demo database. Each fixture insert happens in one SQL transaction.
+The seeder requires `DATABASE_URL` and refuses to write into nonempty catalog or
+interaction tables unless that table already exactly matches its fixture. This avoids
+silently mixing demo records into an existing corpus. Use it only on an isolated demo
+database. Each fixture table insert happens in one SQL transaction.
 The API smoke test still uses fresh isolated IDs and works after seeding.
 
 ## Offline evaluation

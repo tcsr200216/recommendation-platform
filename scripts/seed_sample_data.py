@@ -12,11 +12,47 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.catalog import Item, SqlItemCatalog
 from app.config import settings
 from app.recommender import Interaction, InteractionType
 from app.repository import SqlInteractionRepository
 
 SAMPLE_PATH = Path(__file__).resolve().parents[1] / "data" / "sample_interactions.json"
+SAMPLE_ITEMS_PATH = Path(__file__).resolve().parents[1] / "data" / "sample_items.json"
+
+
+def load_sample_items(path: Path = SAMPLE_ITEMS_PATH) -> tuple[Item, ...]:
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Sample item file must be a nonempty JSON array.")
+    items = []
+    for number, row in enumerate(rows, start=1):
+        if not isinstance(row, dict) or set(row) != {
+            "item_id",
+            "title",
+            "category",
+            "is_active",
+        }:
+            raise ValueError(f"Sample item {number} has invalid fields.")
+        if (
+            not isinstance(row["item_id"], str)
+            or not 1 <= len(row["item_id"].strip()) <= 128
+            or not isinstance(row["title"], str)
+            or not 1 <= len(row["title"].strip()) <= 256
+            or not isinstance(row["category"], str)
+            or not 1 <= len(row["category"].strip()) <= 128
+            or type(row["is_active"]) is not bool
+        ):
+            raise ValueError(f"Sample item {number} has invalid values.")
+        items.append(
+            Item(
+                row["item_id"].strip(),
+                row["title"].strip(),
+                row["category"].strip(),
+                row["is_active"],
+            )
+        )
+    return tuple(items)
 
 
 def load_sample_interactions(path: Path = SAMPLE_PATH) -> tuple[Interaction, ...]:
@@ -75,6 +111,19 @@ def seed_repository(
     return f"Inserted {len(interactions)} sample interactions."
 
 
+def seed_catalog(catalog: SqlItemCatalog, items: tuple[Item, ...]) -> str:
+    """Seed only an empty catalog; exact existing fixture is a safe no-op."""
+    if not items:
+        raise ValueError("Refusing to seed an empty item fixture.")
+    existing = catalog.list_all()
+    if existing == items:
+        return "Sample items already present; no changes made."
+    if existing:
+        raise RuntimeError("Catalog contains other items; refusing to merge sample data.")
+    catalog.add_many(items)
+    return f"Inserted {len(items)} sample items."
+
+
 def main() -> None:
     if not settings.database_url:
         raise SystemExit(
@@ -83,6 +132,9 @@ def main() -> None:
         )
     repository = SqlInteractionRepository.from_url(settings.database_url)
     repository.create_schema()
+    catalog = SqlItemCatalog.from_url(settings.database_url)
+    catalog.create_schema()
+    print(seed_catalog(catalog, load_sample_items()))
     print(seed_repository(repository, load_sample_interactions()))
 
 

@@ -4,6 +4,7 @@ from prometheus_client.parser import text_string_to_metric_families
 
 from app import main
 from app.cache import InMemoryRecommendationCache
+from app.catalog import InMemoryItemCatalog, Item
 from app.recommender import Interaction, InteractionType, Recommendation
 from app.repository import InMemoryInteractionRepository
 
@@ -11,6 +12,7 @@ from app.repository import InMemoryInteractionRepository
 @pytest.fixture(autouse=True)
 def isolated_cache(monkeypatch) -> None:
     monkeypatch.setattr(main, "recommendation_cache", InMemoryRecommendationCache())
+    monkeypatch.setattr(main, "item_catalog", InMemoryItemCatalog())
 
 
 class UnavailableRepository(InMemoryInteractionRepository):
@@ -27,13 +29,23 @@ class UnavailableCache(InMemoryRecommendationCache):
         return False
 
 
+class UnavailableCatalog(InMemoryItemCatalog):
+    def is_ready(self) -> bool:
+        return False
+
+
 def test_ready_reports_active_storage_backend(monkeypatch) -> None:
     monkeypatch.setattr(main, "interaction_repository", InMemoryInteractionRepository())
 
     response = TestClient(main.app).get("/ready")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "storage": "memory", "cache": "memory"}
+    assert response.json() == {
+        "status": "ready",
+        "storage": "memory",
+        "catalog": "memory",
+        "cache": "memory",
+    }
 
 
 def _metric_value(payload: str, name: str, labels: dict[str, str]) -> float:
@@ -71,7 +83,7 @@ def test_metrics_report_live_then_cached_ranking(monkeypatch) -> None:
 
     live_labels = {
         "strategy": "personalized",
-        "model_version": "time-decayed-user-cosine-v3-30d",
+        "model_version": "catalog-aware-time-decayed-user-cosine-v4-30d",
         "source": "live",
     }
     cache_labels = {**live_labels, "source": "cache"}
@@ -110,6 +122,77 @@ def test_ready_returns_503_when_cache_is_unavailable(monkeypatch) -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Recommendation cache is unavailable."
+
+
+def test_ready_returns_503_when_catalog_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(main, "interaction_repository", InMemoryInteractionRepository())
+    monkeypatch.setattr(main, "item_catalog", UnavailableCatalog())
+
+    response = TestClient(main.app).get("/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Item catalog is unavailable."
+
+
+def test_catalog_metadata_enriches_and_filters_recommendations(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    for interaction in [
+        Interaction("target", "shared", InteractionType.LIKE),
+        Interaction("neighbor", "shared", InteractionType.LIKE),
+        Interaction("neighbor", "available", InteractionType.CLICK),
+        Interaction("neighbor", "retired", InteractionType.PURCHASE),
+    ]:
+        repository.add(interaction)
+    catalog = InMemoryItemCatalog()
+    catalog.add_many(
+        (
+            Item("shared", "Shared signal", "signals"),
+            Item("available", "Available course", "courses"),
+            Item("retired", "Retired course", "courses", False),
+        )
+    )
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    monkeypatch.setattr(main, "item_catalog", catalog)
+    client = TestClient(main.app)
+
+    response = client.get("/recommendations/target")
+
+    assert response.status_code == 200
+    assert response.json()[0] == {
+        "item_id": "available",
+        "title": "Available course",
+        "category": "courses",
+        "score": response.json()[0]["score"],
+        "reason": "similar_users",
+        "supporting_item_count": 1,
+    }
+    assert all(item["item_id"] != "retired" for item in response.json())
+
+
+def test_item_upsert_invalidates_rankings_and_can_deactivate_candidate(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    repository.add(Interaction("other", "candidate", InteractionType.PURCHASE))
+    catalog = InMemoryItemCatalog()
+    catalog.upsert(Item("candidate", "Candidate", "books"))
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    monkeypatch.setattr(main, "item_catalog", catalog)
+    client = TestClient(main.app)
+
+    assert client.get("/recommendations/new-user").json()[0]["item_id"] == "candidate"
+    updated = client.put(
+        "/items/candidate",
+        json={"title": "Candidate", "category": "books", "is_active": False},
+    )
+
+    assert updated.status_code == 200
+    assert updated.json()["is_active"] is False
+    assert client.get("/items/candidate").json()["title"] == "Candidate"
+    assert client.get("/recommendations/new-user").json() == []
+
+
+def test_unknown_item_returns_404() -> None:
+    response = TestClient(main.app).get("/items/missing")
+    assert response.status_code == 404
 
 
 def test_api_exposes_personalized_ranking_and_original_popularity(monkeypatch) -> None:
