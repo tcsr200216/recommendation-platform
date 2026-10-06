@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client.parser import text_string_to_metric_families
@@ -448,6 +450,104 @@ def test_interaction_idempotency_rejects_different_payload(monkeypatch) -> None:
     assert conflict.status_code == 409
     assert "different interaction" in conflict.json()["detail"]
     assert len(repository.list_all()) == 1
+
+
+def test_interaction_batch_is_atomic_retry_safe_and_invalidates_once(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+
+    class CountingCache(InMemoryRecommendationCache):
+        invalidations = 0
+
+        def invalidate(self):
+            self.invalidations += 1
+            super().invalidate()
+
+    cache = CountingCache()
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    monkeypatch.setattr(main, "recommendation_cache", cache)
+    client = TestClient(main.app)
+    payload = {
+        "batch_id": "etl-window-2026-10-06-1400",
+        "interactions": [
+            {
+                "user_id": "u1",
+                "item_id": "item-a",
+                "interaction_type": "view",
+                "occurred_at": "2026-10-06T09:00:00-05:00",
+            },
+            {
+                "user_id": "u2",
+                "item_id": "item-b",
+                "interaction_type": "purchase",
+            },
+        ],
+    }
+
+    first = client.post("/interactions/batch", json=payload)
+    replay = client.post("/interactions/batch", json=payload)
+
+    assert first.status_code == 201
+    assert first.json() == {
+        "batch_id": payload["batch_id"],
+        "event_count": 2,
+        "status": "recorded",
+    }
+    assert replay.status_code == 200
+    assert replay.json()["status"] == "replayed"
+    assert len(repository.list_all()) == 2
+    assert repository.list_all()[0].occurred_at == datetime(
+        2026, 10, 6, 14, 0, tzinfo=UTC
+    )
+    assert cache.invalidations == 2
+
+
+def test_interaction_batch_rejects_changed_replay_without_appending(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    client = TestClient(main.app)
+    original = {
+        "batch_id": "batch-conflict",
+        "interactions": [
+            {"user_id": "u1", "item_id": "item-a", "interaction_type": "click"}
+        ],
+    }
+    changed = {
+        **original,
+        "interactions": [
+            {"user_id": "u1", "item_id": "item-b", "interaction_type": "click"}
+        ],
+    }
+
+    assert client.post("/interactions/batch", json=original).status_code == 201
+    conflict = client.post("/interactions/batch", json=changed)
+
+    assert conflict.status_code == 409
+    assert "different interactions" in conflict.json()["detail"]
+    assert [event.item_id for event in repository.list_all()] == ["item-a"]
+
+
+def test_interaction_batch_enforces_bounded_nonempty_payload(monkeypatch) -> None:
+    repository = InMemoryInteractionRepository()
+    monkeypatch.setattr(main, "interaction_repository", repository)
+    client = TestClient(main.app)
+    empty = client.post(
+        "/interactions/batch",
+        json={"batch_id": "empty-batch", "interactions": []},
+    )
+    too_large = client.post(
+        "/interactions/batch",
+        json={
+            "batch_id": "oversized-batch",
+            "interactions": [
+                {"user_id": "u", "item_id": f"item-{index}", "interaction_type": "view"}
+                for index in range(501)
+            ],
+        },
+    )
+
+    assert empty.status_code == 422
+    assert too_large.status_code == 422
+    assert repository.list_all() == ()
 
 
 def test_api_does_not_serve_results_from_an_older_model_version(monkeypatch) -> None:

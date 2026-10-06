@@ -14,7 +14,7 @@ def request(
     base_url: str,
     path: str,
     *,
-    payload: dict[str, str | bool] | None = None,
+    payload: dict[str, object] | None = None,
     method: str | None = None,
 ):
     body = None if payload is None else json.dumps(payload).encode("utf-8")
@@ -137,12 +137,13 @@ def main() -> None:
             "occurred_at": "2026-10-04T18:05:00Z",
         },
     ]
-    for event in events:
-        status, payload = request(args.base_url, "/interactions", payload=event)
-        if status != 201 or payload.get("status") != "recorded":
-            raise RuntimeError(f"interaction write failed: status={status}, payload={payload}")
-        if not payload.get("occurred_at", "").endswith("Z"):
-            raise RuntimeError(f"interaction timestamp was not normalized: {payload}")
+    status, batch = request(
+        args.base_url,
+        "/interactions/batch",
+        payload={"batch_id": f"smoke-batch-{run_id}", "interactions": events},
+    )
+    if status != 201 or batch.get("status") != "recorded" or batch.get("event_count") != 6:
+        raise RuntimeError(f"interaction batch failed: status={status}, payload={batch}")
 
     status, recommendations, recommendation_request_id = request_recommendations(
         args.base_url,
@@ -182,7 +183,7 @@ def main() -> None:
     if status != 201 or feedback.get("recommendation_request_id") != recommendation_request_id:
         raise RuntimeError(f"recommendation attribution failed: status={status}, payload={feedback}")
     print(
-        "Smoke test passed: catalog eligibility, interaction writes, cache invalidation, "
+        "Smoke test passed: catalog eligibility, atomic batch ingestion, cache invalidation, "
         "metadata-enriched and category-diverse ranking, and durable impression "
         "attribution work."
     )

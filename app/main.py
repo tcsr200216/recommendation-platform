@@ -34,6 +34,7 @@ from app.recommender import (
     RecommendationReason,
 )
 from app.repository import (
+    BatchIdempotencyConflictError,
     IdempotencyConflictError,
     InteractionRepository,
     build_interaction_repository,
@@ -69,6 +70,21 @@ class InteractionResponse(BaseModel):
     occurred_at: datetime | None
     idempotency_key: str | None
     recommendation_request_id: str | None
+    status: str
+
+
+class InteractionBatchRequest(BaseModel):
+    batch_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    interactions: list[InteractionRequest] = Field(min_length=1, max_length=500)
+
+
+class InteractionBatchResponse(BaseModel):
+    batch_id: str
+    event_count: int
     status: str
 
 
@@ -292,6 +308,12 @@ async def record_interaction(
             status_code=status.HTTP_409_CONFLICT,
             detail="Idempotency-Key was already used with a different interaction.",
         ) from exc
+    except SQLAlchemyError as exc:
+        INTERACTION_INGESTIONS.labels("storage_error").inc()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interaction repository is unavailable.",
+        ) from exc
 
     outcome = "recorded" if inserted else "replayed"
     INTERACTION_INGESTIONS.labels(outcome).inc()
@@ -318,6 +340,92 @@ async def record_interaction(
         occurred_at=interaction.occurred_at,
         idempotency_key=idempotency_key,
         recommendation_request_id=interaction.recommendation_request_id,
+        status=outcome,
+    )
+
+
+@app.post(
+    "/interactions/batch",
+    response_model=InteractionBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["interactions"],
+)
+async def record_interaction_batch(
+    payload: InteractionBatchRequest,
+    response: Response,
+) -> InteractionBatchResponse:
+    """Atomically record a bounded, retry-safe ordered interaction batch."""
+    interactions = tuple(
+        Interaction(
+            user_id=item.user_id,
+            item_id=item.item_id,
+            interaction_type=item.interaction_type,
+            occurred_at=item.occurred_at,
+            recommendation_request_id=(
+                str(item.recommendation_request_id)
+                if item.recommendation_request_id is not None
+                else None
+            ),
+        )
+        for item in payload.interactions
+    )
+    for interaction in interactions:
+        if interaction.recommendation_request_id is None:
+            continue
+        try:
+            was_exposed = impression_repository.contains(
+                interaction.recommendation_request_id,
+                interaction.user_id,
+                interaction.item_id,
+            )
+        except SQLAlchemyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Impression repository is unavailable.",
+            ) from exc
+        if not was_exposed:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    "A recommendation_request_id does not expose its item "
+                    "to its user."
+                ),
+            )
+
+    try:
+        inserted = interaction_repository.add_batch(interactions, payload.batch_id)
+    except BatchIdempotencyConflictError as exc:
+        INTERACTION_INGESTIONS.labels("batch_conflict").inc()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="batch_id was already used with different interactions.",
+        ) from exc
+    except SQLAlchemyError as exc:
+        INTERACTION_INGESTIONS.labels("batch_storage_error").inc()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interaction repository is unavailable.",
+        ) from exc
+
+    outcome = "recorded" if inserted else "replayed"
+    INTERACTION_INGESTIONS.labels(f"batch_{outcome}").inc()
+    if not inserted:
+        response.status_code = status.HTTP_200_OK
+
+    # Replays repeat invalidation to repair a prior post-commit cache failure.
+    try:
+        recommendation_cache.invalidate()
+        CACHE_OPERATIONS.labels("invalidate", "success").inc()
+    except RedisError as exc:
+        CACHE_OPERATIONS.labels("invalidate", "error").inc()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Interaction batch recorded, but cache invalidation failed.",
+        ) from exc
+
+    return InteractionBatchResponse(
+        batch_id=payload.batch_id,
+        event_count=len(interactions),
         status=outcome,
     )
 

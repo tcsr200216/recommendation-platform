@@ -78,6 +78,25 @@ append-only event behavior. SQL deployments store idempotency records durably an
 atomically with the interaction. See
 [ADR-009](docs/architecture/ADR-009-idempotent-interaction-ingestion.md).
 
+For clickstream or ETL ingestion, `POST /interactions/batch` accepts 1–500 ordered
+events and a stable `batch_id`. PostgreSQL reserves the batch ID and inserts every
+event in one transaction, so a failure cannot leave a partial window. An exact replay
+returns `200` without appending events; reusing the ID with changed normalized content
+returns `409`. Cache invalidation happens once per batch and is retried for replays,
+which avoids one global invalidation per event while preserving recovery after a
+post-commit Redis failure. Example:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:8000/interactions/batch \
+  -H 'Content-Type: application/json' \
+  -d '{"batch_id":"import-2026-10-06-001","interactions":[
+    {"user_id":"alice","item_id":"course-101","interaction_type":"view","occurred_at":"2026-10-06T14:00:00Z"},
+    {"user_id":"bob","item_id":"course-205","interaction_type":"purchase","occurred_at":"2026-10-06T14:01:00Z"}
+  ]}'
+```
+
+See [ADR-017](docs/architecture/ADR-017-atomic-batch-interaction-ingestion.md).
+
 Interactions may include an ISO-8601 `occurred_at` with an explicit timezone.
 The API normalizes accepted timestamps to UTC and treats event time as part of the
 idempotent payload. Omitting it remains supported for legacy and simple clients, but
@@ -102,8 +121,8 @@ python scripts/smoke_test.py
 ```
 
 This starts the non-root API container with PostgreSQL and Redis, waits for all
-health checks, and verifies the end-to-end catalog, ranking, impression, and attributed
-feedback REST flow. The API binds to
+health checks, and verifies the end-to-end catalog, atomic batch ingestion, ranking,
+impression, and attributed feedback REST flow. The API binds to
 `http://127.0.0.1:8000`. See [the deployment guide](docs/deployment.md) for
 configuration, hosted deployment, verification, rollback, and known limits.
 

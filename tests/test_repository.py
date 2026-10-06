@@ -5,6 +5,7 @@ from sqlalchemy import create_engine
 
 from app.recommender import Interaction, InteractionType
 from app.repository import (
+    BatchIdempotencyConflictError,
     IdempotencyConflictError,
     InMemoryInteractionRepository,
     SqlInteractionRepository,
@@ -123,6 +124,53 @@ def test_sql_repository_atomically_deduplicates_idempotency_key() -> None:
         repository.add(Interaction("u1", "item-b", InteractionType.PURCHASE), "checkout-123")
     assert repository.list_all() == (interaction,)
 
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        InMemoryInteractionRepository(),
+        SqlInteractionRepository(create_engine("sqlite+pysqlite:///:memory:")),
+    ],
+)
+def test_repository_atomically_replays_exact_interaction_batch(repository) -> None:
+    if isinstance(repository, SqlInteractionRepository):
+        repository.create_schema()
+    interactions = (
+        Interaction(
+            "u1",
+            "item-a",
+            InteractionType.VIEW,
+            datetime(2026, 10, 6, 14, 0, tzinfo=UTC),
+        ),
+        Interaction("u2", "item-b", InteractionType.PURCHASE),
+    )
+
+    assert repository.add_batch(interactions, "import-2026-10-06-001") is True
+    assert repository.add_batch(interactions, "import-2026-10-06-001") is False
+    assert repository.list_all() == interactions
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        InMemoryInteractionRepository(),
+        SqlInteractionRepository(create_engine("sqlite+pysqlite:///:memory:")),
+    ],
+)
+def test_repository_rejects_batch_id_reuse_without_partial_append(repository) -> None:
+    if isinstance(repository, SqlInteractionRepository):
+        repository.create_schema()
+    original = (Interaction("u1", "item-a", InteractionType.CLICK),)
+    changed = (
+        Interaction("u1", "item-a", InteractionType.CLICK),
+        Interaction("u1", "item-b", InteractionType.CLICK),
+    )
+    repository.add_batch(original, "batch-1")
+
+    with pytest.raises(BatchIdempotencyConflictError):
+        repository.add_batch(changed, "batch-1")
+
+    assert repository.list_all() == original
 
 def test_idempotency_key_rejects_a_different_event_timestamp() -> None:
     repository = InMemoryInteractionRepository()

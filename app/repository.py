@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Sequence
 from datetime import UTC
 from typing import Protocol
@@ -34,6 +36,10 @@ class InteractionRepository(Protocol):
         """Persist once, returning False for an exact idempotent replay."""
         ...
 
+    def add_batch(self, interactions: Sequence[Interaction], batch_id: str) -> bool:
+        """Atomically persist one retry-safe ordered batch."""
+        ...
+
     def list_all(self) -> Sequence[Interaction]:
         """Return a stable snapshot of all recorded interactions."""
         ...
@@ -49,6 +55,7 @@ class InMemoryInteractionRepository:
     def __init__(self) -> None:
         self._interactions: list[Interaction] = []
         self._idempotency_records: dict[str, Interaction] = {}
+        self._batch_fingerprints: dict[str, str] = {}
 
     @property
     def backend(self) -> str:
@@ -63,6 +70,17 @@ class InMemoryInteractionRepository:
                 return False
             self._idempotency_records[idempotency_key] = interaction
         self._interactions.append(interaction)
+        return True
+
+    def add_batch(self, interactions: Sequence[Interaction], batch_id: str) -> bool:
+        fingerprint = _batch_fingerprint(interactions)
+        existing = self._batch_fingerprints.get(batch_id)
+        if existing is not None:
+            if existing != fingerprint:
+                raise BatchIdempotencyConflictError(batch_id)
+            return False
+        self._batch_fingerprints[batch_id] = fingerprint
+        self._interactions.extend(interactions)
         return True
 
     def list_all(self) -> tuple[Interaction, ...]:
@@ -93,6 +111,12 @@ idempotency_table = Table(
     Column("occurred_at", DateTime(timezone=True), nullable=True),
     Column("recommendation_request_id", String(36), nullable=True),
 )
+interaction_batches_table = Table(
+    "interaction_batches",
+    metadata,
+    Column("batch_id", String(128), primary_key=True),
+    Column("payload_sha256", String(64), nullable=False),
+)
 
 
 class IdempotencyConflictError(ValueError):
@@ -100,6 +124,13 @@ class IdempotencyConflictError(ValueError):
 
     def __init__(self, idempotency_key: str) -> None:
         super().__init__(f"Idempotency key '{idempotency_key}' is already used.")
+
+
+class BatchIdempotencyConflictError(ValueError):
+    """Raised when a batch ID is reused for different normalized events."""
+
+    def __init__(self, batch_id: str) -> None:
+        super().__init__(f"Batch ID '{batch_id}' is already used.")
 
 
 class SqlInteractionRepository:
@@ -205,6 +236,34 @@ class SqlInteractionRepository:
         with self._engine.begin() as connection:
             connection.execute(insert(interactions_table), rows)
 
+    def add_batch(self, interactions: Sequence[Interaction], batch_id: str) -> bool:
+        fingerprint = _batch_fingerprint(interactions)
+        rows = [_interaction_row(interaction) for interaction in interactions]
+        try:
+            with self._engine.begin() as connection:
+                connection.execute(
+                    insert(interaction_batches_table).values(
+                        batch_id=batch_id,
+                        payload_sha256=fingerprint,
+                    )
+                )
+                connection.execute(insert(interactions_table), rows)
+            return True
+        except IntegrityError:
+            pass
+
+        with self._engine.connect() as connection:
+            existing = connection.execute(
+                select(interaction_batches_table.c.payload_sha256).where(
+                    interaction_batches_table.c.batch_id == batch_id
+                )
+            ).scalar_one_or_none()
+        if existing is None:
+            raise SQLAlchemyError("Batch conflict occurred without a durable record.")
+        if existing != fingerprint:
+            raise BatchIdempotencyConflictError(batch_id)
+        return False
+
     def list_all(self) -> tuple[Interaction, ...]:
         statement = select(
             interactions_table.c.user_id,
@@ -249,3 +308,32 @@ def build_interaction_repository(database_url: str | None) -> InteractionReposit
     repository = SqlInteractionRepository.from_url(database_url)
     repository.create_schema()
     return repository
+
+
+def _interaction_row(interaction: Interaction) -> dict[str, object]:
+    return {
+        "user_id": interaction.user_id,
+        "item_id": interaction.item_id,
+        "interaction_type": interaction.interaction_type.value,
+        "occurred_at": interaction.occurred_at,
+        "recommendation_request_id": interaction.recommendation_request_id,
+    }
+
+
+def _batch_fingerprint(interactions: Sequence[Interaction]) -> str:
+    payload = [
+        {
+            "interaction_type": interaction.interaction_type.value,
+            "item_id": interaction.item_id,
+            "occurred_at": (
+                interaction.occurred_at.isoformat()
+                if interaction.occurred_at is not None
+                else None
+            ),
+            "recommendation_request_id": interaction.recommendation_request_id,
+            "user_id": interaction.user_id,
+        }
+        for interaction in interactions
+    ]
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
