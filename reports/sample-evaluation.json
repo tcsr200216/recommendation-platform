@@ -1,8 +1,15 @@
 {
-  "report_schema_version": "2",
-  "dataset": {
-    "version": "sha256:0d7428a8bcbe2ab35058c4b1efa1972dc7964f1552a77dac3dac9dc6feb797f7",
-    "interaction_count": 14
+  "report_schema_version": "3",
+  "datasets": {
+    "interactions": {
+      "version": "sha256:0d7428a8bcbe2ab35058c4b1efa1972dc7964f1552a77dac3dac9dc6feb797f7",
+      "interaction_count": 14
+    },
+    "catalog": {
+      "version": "sha256:ddaf6936872178dfbcbc8d59f50a539111758fdbc05a88d0e902bc5181c22f83",
+      "item_count": 6,
+      "active_item_count": 6
+    }
   },
   "evaluation": {
     "split_version": "leave-latest-item-out-v1",
@@ -11,25 +18,63 @@
   "results": [
     {
       "strategy": "popular",
+      "diversity": "none",
       "model_version": "catalog-aware-time-decayed-popularity-v4-30d",
       "k": 5,
       "total_users": 6,
       "evaluated_users": 5,
       "skipped_sparse_users": 1,
       "cold_target_users": 3,
+      "ineligible_target_users": 0,
       "hit_rate_at_k": 0.4,
-      "mrr_at_k": 0.16666666666666666
+      "mrr_at_k": 0.16666666666666666,
+      "average_unique_categories_at_k": 2.0,
+      "category_coverage_at_k": 0.6666666666666666
+    },
+    {
+      "strategy": "popular",
+      "diversity": "category",
+      "model_version": "catalog-aware-time-decayed-popularity-v4-30d-category-coverage-v1-pool5x",
+      "k": 5,
+      "total_users": 6,
+      "evaluated_users": 5,
+      "skipped_sparse_users": 1,
+      "cold_target_users": 3,
+      "ineligible_target_users": 0,
+      "hit_rate_at_k": 0.4,
+      "mrr_at_k": 0.16666666666666666,
+      "average_unique_categories_at_k": 2.0,
+      "category_coverage_at_k": 0.6666666666666666
     },
     {
       "strategy": "personalized",
+      "diversity": "none",
       "model_version": "catalog-aware-time-decayed-user-cosine-v4-30d",
       "k": 5,
       "total_users": 6,
       "evaluated_users": 5,
       "skipped_sparse_users": 1,
       "cold_target_users": 3,
+      "ineligible_target_users": 0,
       "hit_rate_at_k": 0.4,
-      "mrr_at_k": 0.4
+      "mrr_at_k": 0.4,
+      "average_unique_categories_at_k": 1.4,
+      "category_coverage_at_k": 0.4666666666666666
+    },
+    {
+      "strategy": "personalized",
+      "diversity": "category",
+      "model_version": "catalog-aware-time-decayed-user-cosine-v4-30d-category-coverage-v1-pool5x",
+      "k": 5,
+      "total_users": 6,
+      "evaluated_users": 5,
+      "skipped_sparse_users": 1,
+      "cold_target_users": 3,
+      "ineligible_target_users": 0,
+      "hit_rate_at_k": 0.4,
+      "mrr_at_k": 0.4,
+      "average_unique_categories_at_k": 1.4,
+      "category_coverage_at_k": 0.4666666666666666
     }
   ]
 }

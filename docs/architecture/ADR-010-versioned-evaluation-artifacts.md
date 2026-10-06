@@ -10,19 +10,22 @@ result.
 
 ## Decision
 
-Emit a schema-versioned JSON envelope containing a canonical dataset SHA-256,
-interaction count, named split version, K, and each ranker's model version. The
-dataset fingerprint sorts unique `(user, item, interaction type)` tuples and
-includes their occurrence counts, making it independent of export row order while
-retaining repeated-event semantics. Check in the sample fixture's generated report
-and have CI regenerate it and fail on any diff.
+Emit a schema-versioned JSON envelope containing separate canonical SHA-256 identities
+for the interaction snapshot and optional item catalog, their counts, the named split
+version, K, and each ranker's model version. The interaction fingerprint includes UTC
+event time and duplicate counts while remaining independent of export row order. The
+catalog fingerprint covers the ranking-relevant item ID, category, and active flag;
+display-title edits do not create a false model-data change. Check in the sample
+fixtures' generated report and have CI regenerate it and fail on any diff.
 
 ## Why this approach
 
 Content addressing ties metrics to data without relying on filenames, timestamps,
 or mutable database state. Explicit schema, split, and model versions identify all
-major inputs to the deterministic calculation. A plain JSON artifact is reviewable,
-portable, and easy for later experiment tooling to consume.
+major inputs to the deterministic calculation. Separating the two fingerprints makes
+it clear whether behavior changed because of feedback data or candidate eligibility and
+taxonomy. A plain JSON artifact is reviewable, portable, and easy for later experiment
+tooling to consume.
 
 ## Alternatives considered
 
@@ -38,23 +41,26 @@ portable, and easy for later experiment tooling to consume.
 
 ## Tradeoffs / risks
 
-The fingerprint deliberately ignores event order because the current interaction
-domain has no timestamp and both rankers are order-independent. If temporal ranking
-or splitting is introduced, the data-version contract must change and the split
-version must be bumped. The sample report demonstrates reproducibility only; its
-metrics do not establish production quality or business impact.
+The interaction fingerprint ignores source row order but includes event timestamps;
+changing event time therefore changes the data identity used by the temporal split and
+decay policy. Catalog titles are excluded because they enrich responses but do not alter
+ranking. Any future title-aware model must expand and version this contract. The sample
+report demonstrates reproducibility only; its metrics do not establish production
+quality or business impact.
 
 ## How it fits the architecture
 
 Evaluation remains an offline, side-effect-free path over fixture data. It imports
 the same ranking implementations used by the API, records their explicit model
-versions, and does not access the repository or cache boundaries. CI connects the
-fixture, evaluator, report, and documentation through one deterministic check.
+versions, and does not access the repository or cache boundaries. Schema version 3 adds
+catalog provenance and category-policy metrics while keeping the evaluator side-effect
+free. CI connects both fixtures, evaluator, report, and documentation through one
+deterministic check.
 
 ## Interview explanation
 
-"A metric without data and model identity is not reproducible evidence. I added a
-canonical content hash for the interaction multiset, explicit report/split/model
-versions, and a CI-regenerated JSON artifact. That makes ranking changes visible in
-code review while being honest that the synthetic fixture is a correctness demo,
-not an offline claim about real-world lift."
+"A metric without data and model identity is not reproducible evidence. I content-hash
+the timestamped interaction multiset and the ranking-relevant catalog separately, record
+the split, policy, and model versions, and make CI reproduce the JSON byte for byte. That
+makes both feedback drift and catalog-policy changes reviewable while staying honest that
+the synthetic fixture is a correctness demo, not a claim about real-world lift."

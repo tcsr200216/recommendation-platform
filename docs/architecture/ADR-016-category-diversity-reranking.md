@@ -22,6 +22,13 @@ version participates in the existing cache key, metrics, response header, and im
 records. The default `diversity=none` remains byte-for-byte compatible with the existing
 ranking path.
 
+The offline evaluator accepts the same item catalog and can run relevance-only and
+category-diverse policies over one temporal holdout. For each policy it reports HitRate@K,
+MRR@K, mean unique categories, and normalized category coverage. Coverage divides the
+number of known categories in a user's list by `min(K, active catalog categories)`, then
+averages over the same evaluated-user denominator as the relevance metrics. The report
+uses the same 5x/500 candidate bound and policy version as serving.
+
 ## Why this approach
 
 - It separates candidate relevance from presentation constraints.
@@ -31,6 +38,8 @@ ranking path.
 - Versioning prevents collisions with relevance-only cache entries and makes logged
   exposures reproducible.
 - Recording after reranking means feedback attribution reflects what users actually saw.
+- Joint relevance and coverage reports make the policy's tradeoff observable rather than
+  treating diversity as an assumed improvement.
 
 ## Alternatives considered
 
@@ -51,14 +60,18 @@ ranking path.
 - Category quality and granularity determine the usefulness of the result.
 - The policy optimizes category coverage, not measured business or user outcomes; those
   claims require representative offline data and controlled online experiments.
+- Coverage treats catalog categories as equally meaningful and does not measure novelty,
+  fairness, or semantic diversity within a category.
 
 ## How it fits the architecture
 
 The existing rankers remain pure candidate generators. The API selects the versioned
 post-ranking policy, reads/writes through the existing generation-safe cache, enriches
 the final list with catalog metadata, and then records final ranks through the impression
-repository. Existing cache invalidation, attribution validation, and bounded-cardinality
-observability require no new storage dependency.
+repository. The offline evaluator imports the same post-ranker, candidate bound, and
+version constant, and fingerprints catalog eligibility separately from interactions.
+Existing cache invalidation, attribution validation, and bounded-cardinality observability
+require no new storage dependency.
 
 ## Interview explanation
 
@@ -67,5 +80,6 @@ diversity, I fetch a bounded relevance pool, take the best item from each catego
 fill remaining slots in original score order. The policy has its own model version, so it
 cannot collide with ordinary cached results, and impressions capture the final reranked
 order. It is intentionally a transparent heuristic—not a fabricated claim of engagement
-lift—and it creates a clean seam for a future embedding-based or experimentally tuned
-reranker.”
+lift. I evaluate relevance and normalized category coverage on the same temporal holdout,
+so the tradeoff is visible and reproducible. The seam remains open for a future
+embedding-based or experimentally tuned reranker.”

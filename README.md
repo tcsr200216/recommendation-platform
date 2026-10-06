@@ -129,7 +129,8 @@ The API smoke test still uses fresh isolated IDs and works after seeding.
 
 ```bash
 python -m app.evaluation data/sample_interactions.json --k 5
-python -m app.evaluation data/sample_interactions.json --k 5 \
+python -m app.evaluation data/sample_interactions.json \
+  --catalog data/sample_items.json --diversity both --k 5 \
   --output reports/sample-evaluation.json
 python -m pytest
 ```
@@ -142,16 +143,23 @@ times remain in training but are excluded from the evaluation denominator. No li
 database or cache is read or modified.
 
 HitRate@K is the fraction of evaluated users whose held-out item appears in the
-top K. MRR@K averages its reciprocal rank (zero for a miss). Sparse users remain
-in training but are excluded from the metric denominator and counted explicitly.
-Targets absent from the training catalog count as misses and are reported as
-`cold_target_users`. With no eligible users, metrics are JSON null.
-Reports include a schema version, canonical SHA-256 dataset version (including UTC
-event timestamps), interaction count, split version, K, strategy, algorithm version,
-and user counts. The data
-fingerprint is independent of JSON row order while preserving duplicate-event
-counts, so equivalent exports have the same identity without hiding repeated
-behavior. CI regenerates and compares the checked
+top K. MRR@K averages its reciprocal rank (zero for a miss). With a catalog,
+`average_unique_categories_at_k` reports the mean number of represented categories,
+while `category_coverage_at_k` divides that count by `min(K, active categories)` and
+averages it across evaluated users. The report evaluates relevance-only and
+category-diverse variants from the same temporal split and bounded 5x candidate policy
+used online. This exposes the relevance/coverage tradeoff without claiming engagement
+lift from synthetic data.
+
+Sparse users remain in training but are excluded from the metric denominator and
+counted explicitly. Targets absent from training count as `cold_target_users`; targets
+excluded by the supplied active catalog count as `ineligible_target_users`. With no
+eligible users, metrics are JSON null. Reports include a schema version, canonical
+SHA-256 versions for interaction and catalog inputs, counts, split version, K, strategy,
+diversity policy, algorithm version, and user counts. Interaction fingerprints are
+independent of JSON row order while preserving duplicate-event counts; catalog
+fingerprints cover the ranking-relevant ID, category, and active flag. CI regenerates
+and compares the checked
 [`reports/sample-evaluation.json`](reports/sample-evaluation.json) artifact to
 catch fixture, evaluator, model-version, or metric drift in review.
 
@@ -165,7 +173,9 @@ The event-time and temporal-split decision is documented in
 [ADR-012](docs/architecture/ADR-012-event-time-temporal-evaluation.md).
 Temporal decay is part of both evaluated model versions; the sample metrics happen to
 remain unchanged on this small fixture and do not establish that decay improves ranking
-quality. Production tuning would require representative logged data and online tests.
+quality. The sample fixture also happens to leave relevance and category-coverage metrics
+unchanged after reranking; focused tests prove the metric and policy behavior, but
+production tuning still requires representative logged data and online experiments.
 
 ## Continuous integration
 

@@ -22,7 +22,8 @@ jobs:
       - run: python -m ruff check .
       - name: Verify the checked evaluation artifact is reproducible
         run: |
-          python -m app.evaluation data/sample_interactions.json --k 5 --output /tmp/sample-evaluation.json
+          python -m app.evaluation data/sample_interactions.json --catalog data/sample_items.json \
+            --diversity both --k 5 --output /tmp/sample-evaluation.json
           diff -u reports/sample-evaluation.json /tmp/sample-evaluation.json
 
   container-integration:
